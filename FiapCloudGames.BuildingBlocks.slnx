@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FiapCloudGames.BuildingBlocks/FiapCloudGames.BuildingBlocks.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FiapCloudGames.BuildingBlocks.Tests/FiapCloudGames.BuildingBlocks.Tests.csproj" />
+  </Folder>
+</Solution>
