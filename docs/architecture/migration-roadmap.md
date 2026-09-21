@@ -116,9 +116,9 @@ Um módulo só está migrado quando:
 - [ ] listar configurações e secrets atuais;
 - [ ] criar testes de regressão dos fluxos existentes;
 - [ ] definir nomes dos repositórios, solutions e bancos;
-- [ ] definir a organização ou conta Git que receberá os repositórios;
-- [ ] definir o feed NuGet privado;
-- [ ] definir o padrão de branches, tags e releases.
+- [x] definir a organização ou conta Git que receberá os repositórios;
+- [x] definir o feed NuGet privado;
+- [x] definir o padrão de branches, tags e releases.
 
 ### Mapeamento inicial
 
@@ -188,19 +188,19 @@ escopo atual.
 
 ### Atividades
 
-- [ ] criar o repositório Git;
-- [ ] criar a solution e os projetos;
-- [ ] mover apenas componentes técnicos aprovados na triagem;
-- [ ] implementar `AddFiapServiceDefaults`;
-- [ ] implementar `AddFiapApiDefaults`;
-- [ ] implementar validação de token técnico;
-- [ ] implementar `ICallerContext`;
-- [ ] implementar tratamento com `ProblemDetails`;
-- [ ] implementar correlation ID;
-- [ ] criar testes do pacote;
-- [ ] configurar `dotnet pack`;
+- [x] criar o repositório Git;
+- [x] criar a solution e os projetos;
+- [x] mover apenas componentes técnicos aprovados na triagem;
+- [x] implementar `AddFiapServiceDefaults`;
+- [x] implementar `AddFiapApiDefaults`;
+- [x] implementar validação de token técnico;
+- [x] implementar `ICallerContext`;
+- [x] implementar tratamento com `ProblemDetails`;
+- [x] implementar correlation ID;
+- [x] criar testes do pacote;
+- [x] configurar `dotnet pack`;
 - [ ] publicar em um feed NuGet privado;
-- [ ] documentar instalação e configuração.
+- [x] documentar instalação e configuração.
 
 ### Critério de conclusão
 

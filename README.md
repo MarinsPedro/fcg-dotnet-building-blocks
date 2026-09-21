@@ -1,34 +1,131 @@
 # FiapCloudGames.BuildingBlocks
 
-Repositório privado dos componentes técnicos compartilhados entre as APIs do
-FIAP Cloud Games.
+Pacote privado dos componentes técnicos compartilhados entre as APIs do FIAP
+Cloud Games.
 
-## Escopo inicial
+O pacote não contém entidades, repositories, `DbContext`, migrations ou regras
+de negócio.
 
-- autenticação técnica entre serviços;
-- tratamento padronizado de exceções e `ProblemDetails`;
+## Funcionalidades
+
+- validação de JWT técnico por Authority/JWKS;
+- `ICallerContext` com `client_id`, scopes e usuário opcional;
+- policies por cliente e scopes;
+- cliente Client Credentials com cache de token;
+- tratamento global de exceções com `IExceptionHandler`;
+- respostas `application/problem+json` padronizadas;
+- validação MVC padronizada;
+- correlation ID seguro e propagado na resposta;
+- logging estruturado de respostas 4xx;
 - health checks;
-- correlation ID;
-- observabilidade básica;
-- configurações comuns do ASP.NET Core.
+- configuração de trace e span nos logs.
 
-RabbitMQ, MassTransit e Kubernetes não fazem parte da primeira etapa da
-migração.
+RabbitMQ, MassTransit e Kubernetes não fazem parte da primeira etapa.
 
-## Estrutura
+## Instalação
 
-```text
-src/FiapCloudGames.BuildingBlocks/
-tests/FiapCloudGames.BuildingBlocks.Tests/
-docs/architecture/
+Consulte [Consumo do pacote privado](docs/package-consumption.md) para configurar
+o GitHub Packages sem gravar tokens no repositório.
+
+```xml
+<PackageReference Include="FiapCloudGames.BuildingBlocks" Version="0.1.0" />
 ```
 
-## Comandos
+## Configuração da API
+
+```csharp
+using FiapCloudGames.BuildingBlocks.Authentication;
+using FiapCloudGames.BuildingBlocks.Hosting;
+using FiapCloudGames.BuildingBlocks.Web;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.AddFiapServiceDefaults();
+
+builder.Services.AddControllers();
+builder.Services.AddFiapApiDefaults();
+builder.Services.AddFiapServiceAuthentication(builder.Configuration);
+
+// Somente quando a aplicação precisar chamar outra API.
+builder.Services.AddFiapServiceTokenProvider(builder.Configuration);
+
+var app = builder.Build();
+
+app.UseFiapApiDefaults();
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapFiapHealthChecks();
+app.MapControllers();
+
+await app.RunAsync();
+```
+
+`UseFiapApiDefaults` deve ser chamado antes de autenticação e autorização para
+padronizar também as respostas `401` e `403` sem corpo.
+
+## Configuração
+
+```json
+{
+  "Authentication": {
+    "Authority": "https://identity.internal",
+    "Issuer": "fiap-cloud-games-identity",
+    "Audience": "orders-api",
+    "RequireHttpsMetadata": true,
+    "ClockSkew": "00:00:30"
+  },
+  "ServiceAuthentication": {
+    "TokenEndpoint": "https://identity.internal/connect/token",
+    "ClientId": "orders-service",
+    "ClientSecret": "fornecido-por-secret-ou-user-secrets",
+    "RequireHttps": true,
+    "RefreshBeforeExpiration": "00:00:30"
+  }
+}
+```
+
+O `ClientSecret` nunca deve ser commitado. Em desenvolvimento, use user-secrets;
+nos ambientes de execução, use o mecanismo de secrets disponível.
+
+## Policies técnicas
+
+```csharp
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy(
+        "ProcessPayments",
+        policy => policy
+            .RequireAuthenticatedUser()
+            .RequireClients("orders-service")
+            .RequireScopes("payments.process"));
+});
+```
+
+```csharp
+[Authorize(Policy = "ProcessPayments")]
+[HttpPost("/internal/payments")]
+public IActionResult ProcessPayment() => Ok();
+```
+
+## Obtenção de token técnico
+
+```csharp
+var token = await tokenProvider.GetAccessTokenAsync(
+    audience: "payments-api",
+    scopes: "payments.process",
+    cancellationToken);
+```
+
+O provider normaliza os scopes e reutiliza o token até próximo da expiração.
+Ele nunca registra o token ou o client secret.
+
+## Desenvolvimento
 
 ```powershell
-dotnet restore
+dotnet restore --configfile NuGet.Config
 dotnet build --no-restore
-dotnet test --no-build
+dotnet test --no-build --no-restore
 dotnet pack src/FiapCloudGames.BuildingBlocks -c Release
 ```
 
@@ -38,3 +135,4 @@ dotnet pack src/FiapCloudGames.BuildingBlocks -c Release
 - [Roteiro de migração](docs/architecture/migration-roadmap.md)
 - [Arquitetura-alvo](docs/architecture/target-microservices.md)
 - [Autenticação-alvo](docs/architecture/target-authentication.md)
+- [Consumo do pacote](docs/package-consumption.md)
