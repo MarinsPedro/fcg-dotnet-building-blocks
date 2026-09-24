@@ -3,8 +3,12 @@
 ## Status
 
 Este documento registra as decisões obrigatórias para a migração do FIAP
-Cloud Games. A primeira etapa utiliza HTTP entre os serviços, sem RabbitMQ e
-sem Kubernetes.
+Cloud Games e cobre chamadas HTTP, Workers, RabbitMQ e Kubernetes.
+
+JWT protege chamadas HTTP. No RabbitMQ, cada aplicação autentica no broker com
+credencial própria e autorização por exchange e queue; as mensagens não
+carregam JWT. No Kubernetes, credenciais são fornecidas por Secret ou por um
+cofre integrado, nunca por ConfigMap.
 
 ## Decisões fechadas
 
@@ -121,7 +125,8 @@ Regras:
 - revogar e rotacionar credenciais;
 - auditar emissões e falhas.
 
-O Identity não contém regras de Orders, Payments, Catalog ou Entitlements.
+O Identity não contém regras de Orders, Payments, Catalog, Promotions ou
+Library.
 
 ### BFF e API Gateway
 
@@ -145,7 +150,9 @@ O Identity não contém regras de Orders, Payments, Catalog ou Entitlements.
 
 ### Workers
 
-- autenticar no broker com credenciais do broker quando mensageria existir;
+- autenticar no RabbitMQ com uma credencial exclusiva da aplicação;
+- receber a credencial por Secret do Kubernetes;
+- possuir somente as permissões necessárias nas exchanges e queues;
 - não transportar JWT em mensagens;
 - solicitar token `service` somente quando precisarem chamar uma API HTTP;
 - não enviar `userId` quando não existir usuário associado ao processo.
@@ -227,38 +234,33 @@ O token usado nessa chamada contém:
 Orders aceita o `userId` somente se o token for válido, `web-bff` estiver na
 lista de clientes permitidos e o scope contiver `orders.create`.
 
-## Fluxo de Orders para Payments
+## Fluxo de Orders para Payments pelo RabbitMQ
 
-Orders já aplicou as regras de criação do pedido e chama Payments com sua
-própria identidade técnica.
-
-```http
-POST /internal/payments
-Authorization: Bearer <token-service-orders>
-Content-Type: application/json
-
-{
-  "orderId": "585e4649-a9bb-4635-ab61-1424983d19d4",
-  "userId": "47de4c37-34ab-4084-a293-e46229c34aad",
-  "amount": 79.90,
-  "currency": "BRL"
-}
-```
-
-Token esperado:
+Depois de criar o pedido, Orders grava o evento na própria Outbox e o publica
+no RabbitMQ. Nesse trecho não existe JWT:
 
 ```json
 {
-  "aud": "payments-api",
-  "sub": "orders-api",
-  "client_id": "orders-api",
-  "scope": "payments.create",
-  "token_use": "service"
+  "messageId": "2ace1057-8815-4675-babe-a672928b328c",
+  "eventType": "OrderPlacedV1",
+  "correlationId": "5ae87974-a227-4b97-9f20-3593efdad7ca",
+  "producer": "orders",
+  "payload": {
+    "orderId": "585e4649-a9bb-4635-ab61-1424983d19d4",
+    "userId": "47de4c37-34ab-4084-a293-e46229c34aad",
+    "amount": 79.90,
+    "currency": "BRL"
+  }
 }
 ```
 
-Payments autentica Orders, usa `userId` como dado do pagamento e mantém suas
-próprias garantias de idempotência, valor e estado.
+O Payments Worker confia na autenticação da conexão com o RabbitMQ, nas
+permissões da queue, no contrato versionado e em sua Inbox idempotente. Caso
+precise consultar uma API por HTTP, ele obtém um token `service` específico
+para a audience e o scope dessa chamada.
+
+O `userId` presente no evento é um dado do processo já validado na borda. Ele
+não transforma a mensagem em autenticação de usuário.
 
 ## Consulta da biblioteca
 
@@ -472,6 +474,24 @@ resultado da autorização
 - restringir `client_id` e scopes por operação;
 - receber `userId` pelo contrato quando necessário;
 - manter regras de negócio no domínio responsável.
+
+### Workers e RabbitMQ
+
+- usar credencial exclusiva por aplicação no broker;
+- aplicar permissões mínimas por exchange e queue;
+- receber credenciais por Secret do Kubernetes;
+- nunca colocar JWT ou client secret em mensagens;
+- validar contrato e versão do evento;
+- usar Inbox e consumidores idempotentes;
+- obter token `service` somente para chamadas HTTP.
+
+### Kubernetes
+
+- expor publicamente somente BFF e Gateway;
+- manter Identity e APIs de domínio em rede interna;
+- não armazenar secrets em manifests versionados ou ConfigMaps;
+- aplicar NetworkPolicies compatíveis com as chamadas necessárias;
+- rotacionar credenciais de aplicação e RabbitMQ.
 
 ## Consequência arquitetural aceita
 

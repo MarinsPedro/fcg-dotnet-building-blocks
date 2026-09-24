@@ -2,1191 +2,649 @@
 
 ## Objetivo
 
-Este documento descreve uma arquitetura-alvo para a evolução da FIAP Cloud
-Games de um monólito modular para uma plataforma de distribuição digital de
-jogos semelhante, em responsabilidades, a Steam ou Epic Games Store.
+Definir a arquitetura final do FIAP Cloud Games com fronteiras de domínio
+claras, repositórios independentes, comunicação síncrona por HTTP e integração
+assíncrona por RabbitMQ, executada em Kubernetes.
 
-A proposta separa os serviços por capacidade de negócio. Cada microsserviço é
-dono do próprio código, dados, migrations, contratos e ciclo de implantação.
-APIs, Workers e migrations pertencentes ao mesmo domínio permanecem no mesmo
-repositório, ainda que sejam executáveis e containers diferentes.
+Os únicos módulos de domínio são:
 
-## Visão geral
+- Identity;
+- Catalog;
+- Promotions;
+- Orders;
+- Payments;
+- Library;
+- Notifications.
 
-| Domínio | Repositório | Solution | Banco lógico |
+Building Blocks é uma biblioteca técnica. BFF e API Gateway são componentes de
+borda. Kubernetes e RabbitMQ são infraestrutura. Nenhum deles representa um
+novo módulo de domínio.
+
+## Classificação dos repositórios
+
+### Domínio
+
+| Módulo | Repositório | Solution | Banco |
 |---|---|---|---|
-| Identidade e usuários | `fcg-identity-service` | `FiapCloudGames.Identity.sln` | `fcg_identity` |
-| Catálogo | `fcg-catalog-service` | `FiapCloudGames.Catalog.sln` | `fcg_catalog` |
-| Preços e promoções | `fcg-pricing-service` | `FiapCloudGames.Pricing.sln` | `fcg_pricing` |
-| Pedidos | `fcg-orders-service` | `FiapCloudGames.Orders.sln` | `fcg_orders` |
-| Pagamentos | `fcg-payments-service` | `FiapCloudGames.Payments.sln` | `fcg_payments` |
-| Direitos e biblioteca | `fcg-entitlements-service` | `FiapCloudGames.Entitlements.sln` | `fcg_entitlements` |
-| Notificações | `fcg-notifications-service` | `FiapCloudGames.Notifications.sln` | `fcg_notifications` |
-| Infraestrutura compartilhada | `fcg-platform` | Não se aplica | Não possui banco de negócio |
+| Identity | `fcg-identity-service` | `FiapCloudGames.Identity.slnx` | `fcg_identity` |
+| Catalog | `fcg-catalog-service` | `FiapCloudGames.Catalog.slnx` | `fcg_catalog` |
+| Promotions | `fcg-promotions-service` | `FiapCloudGames.Promotions.slnx` | `fcg_promotions` |
+| Orders | `fcg-orders-service` | `FiapCloudGames.Orders.slnx` | `fcg_orders` |
+| Payments | `fcg-payments-service` | `FiapCloudGames.Payments.slnx` | `fcg_payments` |
+| Library | `fcg-library-service` | `FiapCloudGames.Library.slnx` | `fcg_library` |
+| Notifications | `fcg-notifications-service` | `FiapCloudGames.Notifications.slnx` | `fcg_notifications` |
+
+### Compartilhamento, borda e plataforma
+
+| Categoria | Repositório | Finalidade |
+|---|---|---|
+| Biblioteca | `fcg-dotnet-building-blocks` | Um pacote NuGet técnico compartilhado |
+| Borda web | `fcg-web-bff` | Entrada do front-end web e sessão do usuário |
+| Borda pública | `fcg-api-gateway` | Entrada de clientes externos e políticas de borda |
+| Plataforma | `fcg-platform` | Kubernetes, RabbitMQ, observabilidade e configuração de ambientes |
+
+O repositório `fcg-platform` não contém regras de negócio nem código de um
+microsserviço. Ele centraliza apenas os artefatos compartilhados de operação.
 
 ## Arquitetura de alto nível
 
 ```mermaid
 flowchart LR
-    Client[Cliente] --> Gateway[API Gateway / BFF]
+    Web[Front-end web] --> BFF[Web BFF]
+    External[Cliente externo] --> Gateway[API Gateway]
 
-    Gateway --> Identity[Identity API]
-    Gateway --> Catalog[Catalog API]
-    Gateway --> Pricing[Pricing API]
-    Gateway --> Orders[Orders API]
-    Gateway --> Entitlements[Entitlements API]
+    BFF --> Identity[Identity API]
+    Gateway --> Identity
+    BFF --> Catalog[Catalog API]
+    Gateway --> Catalog
+    BFF --> Orders[Orders API]
+    Gateway --> Orders
+    BFF --> Library[Library API]
+    Gateway --> Library
 
     Orders --> Catalog
-    Orders --> Pricing
+    Orders --> Promotions[Promotions API]
 
-    Orders -- OrderPlacedEvent --> Broker[(RabbitMQ)]
-    Broker --> Payments[Payments Worker]
-    Payments -- PaymentProcessedEvent --> Broker
-    Broker --> OrdersWorker[Orders Worker]
-    OrdersWorker -- EntitlementRequestedEvent --> Broker
-    Broker --> EntitlementsWorker[Entitlements Worker]
-    EntitlementsWorker -- EntitlementGrantedEvent --> Broker
-    Broker --> OrdersWorker
+    OrdersWorker[Orders Worker] <--> Broker[(RabbitMQ)]
+    PaymentsWorker[Payments Worker] <--> Broker
+    LibraryWorker[Library Worker] <--> Broker
+    NotificationsWorker[Notifications Worker] <--> Broker
 
-    Identity -- UserCreatedEvent --> Broker
-    Broker --> Notifications[Notifications Worker]
-    Broker --> Notifications
+    Orders --> OrdersDb[(Orders DB)]
+    PaymentsWorker --> PaymentsDb[(Payments DB)]
+    LibraryWorker --> LibraryDb[(Library DB)]
+    NotificationsWorker --> NotificationsDb[(Notifications DB)]
 ```
 
-## Princípios de organização
+## Princípios
 
-1. Um repositório representa um domínio implantável, não uma camada técnica.
-2. API, Worker, Domain, Application, Infrastructure e Migrations do mesmo
-   serviço ficam no mesmo repositório.
-3. Cada serviço possui seu banco lógico e seu usuário de banco.
-4. Nenhum serviço acessa tabelas pertencentes a outro serviço.
-5. Integrações síncronas usam HTTP somente quando a resposta é necessária para
-   continuar a requisição.
-6. Mudanças de estado e processos longos usam eventos assíncronos.
-7. Eventos são idempotentes, versionados e rastreáveis por `CorrelationId`.
-8. Outbox é usada nos produtores e Inbox nos consumidores importantes.
-9. Cada serviço possui health checks, logs estruturados e rastreamento
-   distribuído.
+1. Cada domínio possui seu próprio repositório, solution, banco e migrations.
+2. API e Worker do mesmo domínio ficam no mesmo repositório.
+3. Nenhum serviço consulta diretamente o banco de outro serviço.
+4. HTTP é usado quando a resposta é necessária imediatamente.
+5. RabbitMQ é usado para processos assíncronos e integração entre domínios.
+6. Publicação confiável usa Outbox; consumo idempotente usa Inbox.
+7. Somente BFF e Gateway são expostos aos clientes.
+8. Tokens de usuário terminam na borda; APIs internas recebem tokens de serviço.
+9. Mensagens do RabbitMQ não carregam JWT.
+10. Kubernetes executa e isola as aplicações, mas não contém regras de negócio.
+11. Building Blocks contém apenas recursos técnicos genéricos.
 
-O fluxo de identidade de usuário, BFF, Gateway, Client Credentials, tokens
-técnicos e Workers está detalhado em
-[Autenticação e autorização da arquitetura-alvo](target-authentication.md).
+## Estrutura padrão de um domínio
 
----
+```text
+fcg-<nome>-service/
+├── FiapCloudGames.<Nome>.slnx
+├── Directory.Build.props
+├── Directory.Packages.props
+├── NuGet.Config
+├── README.md
+├── src/
+│   ├── FiapCloudGames.<Nome>.Api/
+│   ├── FiapCloudGames.<Nome>.Worker/
+│   ├── FiapCloudGames.<Nome>.Application/
+│   ├── FiapCloudGames.<Nome>.Domain/
+│   ├── FiapCloudGames.<Nome>.Infrastructure/
+│   └── FiapCloudGames.<Nome>.Contracts/
+├── tests/
+│   ├── FiapCloudGames.<Nome>.UnitTests/
+│   ├── FiapCloudGames.<Nome>.IntegrationTests/
+│   └── FiapCloudGames.<Nome>.ArchitectureTests/
+├── deploy/
+│   ├── api/
+│   └── worker/
+└── Dockerfile
+```
 
-## 1. Identity Service
+Projetos que não precisarem de Worker não devem criar um Worker vazio. A
+estrutura é uma referência, não uma obrigação de gerar todos os projetos.
+
+## Identity
 
 ### Identificação
 
 | Item | Valor |
 |---|---|
 | Repositório | `fcg-identity-service` |
-| Solution | `FiapCloudGames.Identity.sln` |
-| API/Service Kubernetes | `identity-api` |
+| Solution | `FiapCloudGames.Identity.slnx` |
+| Workload Kubernetes | `identity-api` |
 | Banco | `fcg_identity` |
-| Usuário do banco | `fcg_identity_app` |
-| Nome compatível com a atividade | `UsersAPI` |
-
-### Finalidade
-
-É a autoridade sobre identidade, credenciais e acesso. Responde quem é o
-usuário, como ele autentica e quais permissões possui.
+| Audience | `identity-api` |
 
 ### Responsabilidades
 
-- cadastrar usuários;
-- autenticar credenciais;
-- emitir tokens JWT;
-- renovar e revogar sessões;
-- gerenciar papéis e permissões;
-- alterar dados de conta;
-- desativar ou bloquear usuários;
-- publicar `UserCreatedEvent`;
-- proteger senhas e dados de autenticação.
+- cadastro e autenticação de usuários;
+- usuários, credenciais, roles e permissões de identidade;
+- refresh token e revogação;
+- cadastro de aplicações por `client_id`;
+- Client Credentials;
+- emissão de tokens `user` e `service`;
+- assinatura assimétrica e publicação de JWKS;
+- audiences e scopes específicos.
 
-### Fora de responsabilidade
-
-- jogos comprados pelo usuário;
-- pedidos e pagamentos;
-- envio de e-mail;
-- preferências comerciais;
-- dados de cartão.
-
-### Estrutura sugerida
+### Endpoints iniciais
 
 ```text
-fcg-identity-service/
-├── FiapCloudGames.Identity.sln
-├── src/
-│   ├── FiapCloudGames.Identity.Api/
-│   ├── FiapCloudGames.Identity.Application/
-│   ├── FiapCloudGames.Identity.Domain/
-│   ├── FiapCloudGames.Identity.Infrastructure/
-│   ├── FiapCloudGames.Identity.Contracts/
-│   └── FiapCloudGames.Identity.Migrations/
-├── tests/
-│   ├── FiapCloudGames.Identity.UnitTests/
-│   ├── FiapCloudGames.Identity.IntegrationTests/
-│   └── FiapCloudGames.Identity.ArchitectureTests/
-├── k8s/
-├── Dockerfile
-└── README.md
+POST /api/auth/register
+POST /api/auth/login
+POST /api/auth/refresh
+POST /connect/token
+GET  /.well-known/jwks.json
 ```
 
-### Dados principais
+Login e cadastro externos passam pelo BFF ou Gateway. O serviço não é exposto
+diretamente por Ingress.
 
-- `users`;
-- `roles`;
-- `user_roles`;
-- `refresh_tokens`;
-- `outbox_messages`.
-
-### Endpoints principais
-
-```text
-POST   /api/users
-POST   /api/auth/login
-POST   /api/auth/refresh
-POST   /api/auth/logout
-GET    /api/users/me
-PUT    /api/users/me
-GET    /api/users/{id}
-DELETE /api/users/{id}
-```
-
-### Eventos publicados
-
-- `UserCreatedEvent`;
-- `UserDeactivatedEvent`, em uma evolução futura;
-- `UserEmailChangedEvent`, em uma evolução futura.
-
-### Eventos consumidos
-
-Nenhum evento é obrigatório na primeira versão.
-
-### Origem no projeto atual
-
-O serviço nasce principalmente do módulo `Identity`, incluindo Domain,
-Application, Infrastructure, Presentation, Contracts e suas migrations.
-
----
-
-## 2. Catalog Service
+## Catalog
 
 ### Identificação
 
 | Item | Valor |
 |---|---|
 | Repositório | `fcg-catalog-service` |
-| Solution | `FiapCloudGames.Catalog.sln` |
-| API/Service Kubernetes | `catalog-api` |
+| Solution | `FiapCloudGames.Catalog.slnx` |
+| Workload Kubernetes | `catalog-api` |
 | Banco | `fcg_catalog` |
-| Usuário do banco | `fcg_catalog_app` |
-| Nome compatível com a atividade | `CatalogAPI` |
-
-### Finalidade
-
-É a autoridade sobre o produto digital. Descreve o que é um jogo e quais
-conteúdos estão disponíveis na loja.
+| Audience | `catalog-api` |
 
 ### Responsabilidades
 
-- cadastrar e atualizar jogos;
-- manter título, descrição, gênero e classificação;
-- manter desenvolvedora e publicadora;
-- controlar disponibilidade comercial;
-- gerenciar edições, DLCs e bundles de conteúdo;
-- fornecer informações para loja, busca e criação de pedidos;
-- publicar mudanças relevantes do catálogo.
+- cadastro e manutenção de jogos;
+- título, descrição, gênero, classificação e disponibilidade;
+- preço-base e moeda;
+- consultas administrativas e de vitrine;
+- fornecimento do snapshot de produto para Orders.
 
-### Fora de responsabilidade
-
-- preço final e regras de desconto;
-- estado da compra;
-- processamento financeiro;
-- propriedade do jogo pelo usuário;
-- entrega de notificações.
-
-### Estrutura sugerida
+### Endpoints iniciais
 
 ```text
-fcg-catalog-service/
-├── FiapCloudGames.Catalog.sln
-├── src/
-│   ├── FiapCloudGames.Catalog.Api/
-│   ├── FiapCloudGames.Catalog.Application/
-│   ├── FiapCloudGames.Catalog.Domain/
-│   ├── FiapCloudGames.Catalog.Infrastructure/
-│   ├── FiapCloudGames.Catalog.Contracts/
-│   └── FiapCloudGames.Catalog.Migrations/
-├── tests/
-│   ├── FiapCloudGames.Catalog.UnitTests/
-│   ├── FiapCloudGames.Catalog.IntegrationTests/
-│   └── FiapCloudGames.Catalog.ArchitectureTests/
-├── k8s/
-├── Dockerfile
-└── README.md
+GET    /internal/games
+GET    /internal/games/{gameId}
+POST   /internal/games
+PUT    /internal/games/{gameId}
+DELETE /internal/games/{gameId}
 ```
 
-### Dados principais
+Catalog não aplica descontos e não conhece pedidos ou pagamentos.
 
-- `games`;
-- `publishers`;
-- `developers`;
-- `genres`;
-- `game_genres`;
-- `game_editions`;
-- `downloadable_contents`;
-- `outbox_messages`.
-
-### Endpoints principais
-
-```text
-GET    /api/games
-GET    /api/games/{id}
-POST   /api/games
-PUT    /api/games/{id}
-DELETE /api/games/{id}
-GET    /api/games/{id}/editions
-GET    /api/games/{id}/dlcs
-```
-
-### Eventos publicados
-
-- `GameCreatedEvent`;
-- `GameUpdatedEvent`;
-- `GameDeactivatedEvent`;
-- `GameEditionCreatedEvent`, em uma evolução futura.
-
-### Eventos consumidos
-
-Nenhum evento é obrigatório na primeira versão.
-
-### Origem no projeto atual
-
-O serviço nasce do módulo `Catalog`. O preço-base atual deve ser migrado para o
-Pricing Service quando a separação estiver concluída, permanecendo no Catalog
-somente durante uma transição controlada.
-
----
-
-## 3. Pricing & Promotions Service
+## Promotions
 
 ### Identificação
 
 | Item | Valor |
 |---|---|
-| Repositório | `fcg-pricing-service` |
-| Solution | `FiapCloudGames.Pricing.sln` |
-| API/Service Kubernetes | `pricing-api` |
-| Banco | `fcg_pricing` |
-| Usuário do banco | `fcg_pricing_app` |
-
-### Finalidade
-
-É a autoridade sobre preços e condições comerciais. Responde quanto um produto
-custa para determinado país, moeda, momento e contexto promocional.
+| Repositório | `fcg-promotions-service` |
+| Solution | `FiapCloudGames.Promotions.slnx` |
+| Workload Kubernetes | `promotions-api` |
+| Banco | `fcg_promotions` |
+| Audience | `promotions-api` |
 
 ### Responsabilidades
 
-- manter preços por região e moeda;
-- criar e encerrar promoções;
-- aplicar descontos;
-- controlar validade das campanhas;
-- calcular o melhor preço vigente;
-- manter histórico de preços;
-- suportar cupons e bundles em evoluções futuras;
-- devolver uma cotação imutável para o Orders Service.
+- campanhas promocionais;
+- descontos fixos ou percentuais;
+- período de vigência;
+- elegibilidade por jogo ou regra;
+- cálculo do desconto sobre um preço-base recebido;
+- retorno do preço final e da promoção aplicada.
 
-### Fora de responsabilidade
-
-- descrição completa do jogo;
-- criação e conclusão de pedidos;
-- cobrança financeira;
-- concessão de acesso ao jogo.
-
-### Estrutura sugerida
+### Endpoint interno de cálculo
 
 ```text
-fcg-pricing-service/
-├── FiapCloudGames.Pricing.sln
-├── src/
-│   ├── FiapCloudGames.Pricing.Api/
-│   ├── FiapCloudGames.Pricing.Application/
-│   ├── FiapCloudGames.Pricing.Domain/
-│   ├── FiapCloudGames.Pricing.Infrastructure/
-│   ├── FiapCloudGames.Pricing.Contracts/
-│   └── FiapCloudGames.Pricing.Migrations/
-├── tests/
-│   ├── FiapCloudGames.Pricing.UnitTests/
-│   ├── FiapCloudGames.Pricing.IntegrationTests/
-│   └── FiapCloudGames.Pricing.ArchitectureTests/
-├── k8s/
-├── Dockerfile
-└── README.md
+POST /internal/promotions/calculate
 ```
 
-### Dados principais
+Exemplo de entrada:
 
-- `game_prices`;
-- `regional_prices`;
-- `promotions`;
-- `promotion_games`;
-- `coupons`, futuramente;
-- `price_history`;
-- `outbox_messages`;
-- `inbox_messages`.
-
-### Endpoints principais
-
-```text
-GET    /api/prices/games/{gameId}/quote
-GET    /api/prices/games/{gameId}
-PUT    /api/prices/games/{gameId}
-GET    /api/promotions
-GET    /api/promotions/{id}
-POST   /api/promotions
-PUT    /api/promotions/{id}
-DELETE /api/promotions/{id}
+```json
+{
+  "gameId": "80fdc742-e7c1-4564-a269-8d52784bec44",
+  "basePrice": 99.90,
+  "currency": "BRL",
+  "calculatedAt": "2026-09-24T18:00:00Z"
+}
 ```
 
-Uma cotação deve possuir prazo de validade e dados suficientes para ser salva
-como snapshot no pedido:
+Promotions não consulta o banco do Catalog. Orders fornece o preço-base que
+acabou de obter do Catalog.
 
-```text
-QuoteId
-GameId
-BasePrice
-Discount
-FinalPrice
-Currency
-PromotionId
-ValidUntilUtc
-```
-
-### Eventos publicados
-
-- `PriceChangedEvent`;
-- `PromotionCreatedEvent`;
-- `PromotionEndedEvent`.
-
-### Eventos consumidos
-
-- `GameCreatedEvent`;
-- `GameUpdatedEvent`;
-- `GameDeactivatedEvent`.
-
-Esses eventos podem alimentar uma pequena projeção local com as referências de
-produtos necessárias para validar preços e promoções.
-
-### Origem no projeto atual
-
-O serviço nasce principalmente do módulo `Promotions`. O value object de preço
-e as regras de preço-base atualmente presentes no Catalog devem ser movidos ou
-adaptados para este domínio.
-
----
-
-## 4. Orders Service
+## Orders
 
 ### Identificação
 
 | Item | Valor |
 |---|---|
 | Repositório | `fcg-orders-service` |
-| Solution | `FiapCloudGames.Orders.sln` |
-| API/Service Kubernetes | `orders-api` |
-| Worker Kubernetes | `orders-worker` |
+| Solution | `FiapCloudGames.Orders.slnx` |
+| Workloads Kubernetes | `orders-api`, `orders-worker` |
 | Banco | `fcg_orders` |
-| Usuário do banco | `fcg_orders_app` |
-
-### Finalidade
-
-É a autoridade sobre a compra como processo de negócio. Registra a intenção de
-compra, preserva o snapshot comercial e coordena a Saga até que o pagamento e a
-concessão do jogo tenham sido concluídos.
+| Audience | `orders-api` |
 
 ### Responsabilidades
 
-- criar pedidos;
-- consultar Catalog para validar o produto;
-- solicitar cotação ao Pricing;
-- salvar preço e descrição como snapshot;
-- controlar estados do pedido;
-- iniciar o processamento do pagamento;
-- reagir à aprovação ou rejeição;
-- solicitar a concessão do entitlement;
-- concluir, cancelar e futuramente reembolsar pedidos;
-- fornecer histórico de compras do usuário.
-
-### Fora de responsabilidade
-
-- processar cartão, Pix ou outro meio financeiro;
-- cadastrar jogos;
-- calcular internamente regras promocionais;
-- criar diretamente registros na biblioteca;
-- enviar e-mail.
-
-### Estrutura sugerida
-
-```text
-fcg-orders-service/
-├── FiapCloudGames.Orders.sln
-├── src/
-│   ├── FiapCloudGames.Orders.Api/
-│   ├── FiapCloudGames.Orders.Worker/
-│   ├── FiapCloudGames.Orders.Application/
-│   ├── FiapCloudGames.Orders.Domain/
-│   ├── FiapCloudGames.Orders.Infrastructure/
-│   ├── FiapCloudGames.Orders.Contracts/
-│   └── FiapCloudGames.Orders.Migrations/
-├── tests/
-│   ├── FiapCloudGames.Orders.UnitTests/
-│   ├── FiapCloudGames.Orders.IntegrationTests/
-│   └── FiapCloudGames.Orders.ArchitectureTests/
-├── k8s/
-├── Dockerfile.Api
-├── Dockerfile.Worker
-└── README.md
-```
-
-### Dados principais
-
-- `orders`;
-- `order_items`;
-- `order_status_history`;
-- `outbox_messages`;
-- `inbox_messages`.
+- criação idempotente do pedido;
+- associação entre usuário e itens;
+- consulta síncrona de Catalog e Promotions;
+- snapshot do jogo, preço-base, desconto, preço final e moeda;
+- máquina de estados do pedido;
+- Outbox de eventos de pedido;
+- consumo idempotente de resultados de Payments e Library;
+- consulta do status da compra.
 
 ### Estados iniciais
 
 ```text
-Created
 PendingPayment
-PaymentRejected
 PaymentApproved
-GrantingEntitlement
+PaymentRejected
+LibraryPending
 Completed
-Cancelled
 Failed
+Cancelled
 ```
 
-Estados futuros:
+### Endpoints iniciais
 
 ```text
-RefundPending
-Refunded
-PartiallyRefunded
+POST /internal/orders
+GET  /internal/orders/{orderId}
+GET  /internal/users/{userId}/orders
+POST /internal/orders/{orderId}/retry
 ```
 
-### Endpoints principais
+### Eventos
 
-```text
-POST /api/orders
-GET  /api/orders/{id}
-GET  /api/orders/me
-POST /api/orders/{id}/cancel
-POST /api/orders/{id}/retry-payment
-POST /api/orders/{id}/refund
-```
+Publica:
 
-Os três primeiros são suficientes para a primeira entrega.
+- `OrderPlacedV1`;
+- `LibraryGrantRequestedV1`;
+- `OrderCompletedV1`;
+- `OrderFailedV1`.
 
-### Eventos publicados
+Consome:
 
-- `OrderPlacedEvent`;
-- `EntitlementRequestedEvent`;
-- `OrderCompletedEvent`;
-- `OrderCancelledEvent`;
-- `OrderRefundedEvent`, futuramente.
+- `PaymentApprovedV1`;
+- `PaymentRejectedV1`;
+- `LibraryGameGrantedV1`;
+- `LibraryGameGrantFailedV1`.
 
-### Eventos consumidos
-
-- `PaymentProcessedEvent`;
-- `EntitlementGrantedEvent`;
-- `EntitlementGrantFailedEvent`;
-- `EntitlementRevokedEvent`, futuramente.
-
-### Origem no projeto atual
-
-É um domínio novo. O endpoint atual de aquisição da Library serve como ponto de
-partida funcional, mas sua lógica deve mudar: em vez de adicionar o jogo
-imediatamente, ele deve criar um pedido pendente e iniciar o fluxo assíncrono.
-
----
-
-## 5. Payments Service
+## Payments
 
 ### Identificação
 
 | Item | Valor |
 |---|---|
 | Repositório | `fcg-payments-service` |
-| Solution | `FiapCloudGames.Payments.sln` |
-| API/Service Kubernetes | `payments-api` |
-| Worker Kubernetes | `payments-worker` |
+| Solution | `FiapCloudGames.Payments.slnx` |
+| Workloads Kubernetes | `payments-api`, `payments-worker` |
 | Banco | `fcg_payments` |
-| Usuário do banco | `fcg_payments_app` |
-| Nome compatível com a atividade | `PaymentsAPI` |
-
-### Finalidade
-
-É a autoridade sobre tentativas e resultados financeiros. Na fase acadêmica,
-simula aprovação ou rejeição; em uma plataforma real, integra com provedores de
-pagamento e antifraude.
+| Audience | `payments-api` |
 
 ### Responsabilidades
 
-- consumir pedidos criados;
-- criar tentativas de pagamento;
-- simular ou solicitar autorização financeira;
-- registrar aprovação e rejeição;
-- impedir cobrança duplicada;
-- publicar o resultado do processamento;
-- suportar retentativas;
-- processar reembolsos futuramente;
-- manter referências do provedor financeiro.
+- consumir `OrderPlacedV1`;
+- criar pagamento idempotente por `OrderId`;
+- simular ou integrar o provedor de pagamento;
+- registrar tentativas e resultado;
+- não armazenar dados completos de cartão;
+- publicar aprovação ou rejeição;
+- permitir consulta interna de diagnóstico.
 
-### Fora de responsabilidade
-
-- manter dados completos de cartão;
-- decidir preço ou desconto;
-- concluir o pedido comercial;
-- conceder o jogo ao usuário;
-- enviar confirmação por e-mail.
-
-### Estrutura sugerida
+### Endpoints iniciais
 
 ```text
-fcg-payments-service/
-├── FiapCloudGames.Payments.sln
-├── src/
-│   ├── FiapCloudGames.Payments.Api/
-│   ├── FiapCloudGames.Payments.Worker/
-│   ├── FiapCloudGames.Payments.Application/
-│   ├── FiapCloudGames.Payments.Domain/
-│   ├── FiapCloudGames.Payments.Infrastructure/
-│   ├── FiapCloudGames.Payments.Contracts/
-│   └── FiapCloudGames.Payments.Migrations/
-├── tests/
-│   ├── FiapCloudGames.Payments.UnitTests/
-│   ├── FiapCloudGames.Payments.IntegrationTests/
-│   └── FiapCloudGames.Payments.ArchitectureTests/
-├── k8s/
-├── Dockerfile.Api
-├── Dockerfile.Worker
-└── README.md
+GET  /internal/payments/{paymentId}
+GET  /internal/orders/{orderId}/payment
+POST /internal/payments/{paymentId}/retry
 ```
 
-### Dados principais
+### Eventos
 
-- `payments`;
-- `payment_attempts`;
-- `refunds`;
-- `outbox_messages`;
-- `inbox_messages`.
+Consome `OrderPlacedV1` e publica `PaymentApprovedV1` ou
+`PaymentRejectedV1`.
 
-### Endpoints principais
-
-```text
-GET  /api/payments/{id}
-GET  /api/payments/orders/{orderId}
-POST /api/payments/{id}/refund
-```
-
-O processamento principal começa pela mensageria, não pelo endpoint HTTP.
-
-### Eventos publicados
-
-- `PaymentProcessedEvent`, com status `Approved` ou `Rejected`;
-- `PaymentRefundedEvent`, futuramente.
-
-### Eventos consumidos
-
-- `OrderPlacedEvent`;
-- `OrderRefundRequestedEvent`, futuramente.
-
-### Origem no projeto atual
-
-É um domínio novo.
-
----
-
-## 6. Entitlements & Library Service
+## Library
 
 ### Identificação
 
 | Item | Valor |
 |---|---|
-| Repositório | `fcg-entitlements-service` |
-| Solution | `FiapCloudGames.Entitlements.sln` |
-| API/Service Kubernetes | `entitlements-api` |
-| Worker Kubernetes | `entitlements-worker` |
-| Banco | `fcg_entitlements` |
-| Usuário do banco | `fcg_entitlements_app` |
-
-### Finalidade
-
-É a autoridade sobre o direito de acesso a produtos digitais. A Library é a
-visão dos entitlements ativos pertencentes ao usuário.
+| Repositório | `fcg-library-service` |
+| Solution | `FiapCloudGames.Library.slnx` |
+| Workloads Kubernetes | `library-api`, `library-worker` |
+| Banco | `fcg_library` |
+| Audience | `library-api` |
 
 ### Responsabilidades
 
-- conceder direito de acesso a um jogo;
-- garantir que a concessão seja idempotente;
-- impedir duplicidade de licença;
-- revogar acesso após reembolso, fraude ou decisão administrativa;
-- manter histórico da concessão;
-- responder se um usuário pode acessar determinado jogo;
-- listar a biblioteca do usuário;
-- suportar compras, presentes, promoções e assinaturas futuramente.
+- representar os jogos adquiridos por cada usuário;
+- consultar a biblioteca do usuário;
+- consumir solicitações de concessão;
+- conceder cada jogo uma única vez;
+- impedir duplicidade por usuário, jogo e pedido;
+- publicar o resultado da concessão.
 
-### Fora de responsabilidade
-
-- autenticar credenciais;
-- cadastrar o jogo;
-- calcular o preço;
-- processar pagamento;
-- controlar o estado geral do pedido.
-
-### Estrutura sugerida
+### Endpoints iniciais
 
 ```text
-fcg-entitlements-service/
-├── FiapCloudGames.Entitlements.sln
-├── src/
-│   ├── FiapCloudGames.Entitlements.Api/
-│   ├── FiapCloudGames.Entitlements.Worker/
-│   ├── FiapCloudGames.Entitlements.Application/
-│   ├── FiapCloudGames.Entitlements.Domain/
-│   ├── FiapCloudGames.Entitlements.Infrastructure/
-│   ├── FiapCloudGames.Entitlements.Contracts/
-│   └── FiapCloudGames.Entitlements.Migrations/
-├── tests/
-│   ├── FiapCloudGames.Entitlements.UnitTests/
-│   ├── FiapCloudGames.Entitlements.IntegrationTests/
-│   └── FiapCloudGames.Entitlements.ArchitectureTests/
-├── k8s/
-├── Dockerfile.Api
-├── Dockerfile.Worker
-└── README.md
+GET /internal/users/{userId}/library
+GET /internal/users/{userId}/library/{gameId}
 ```
 
-### Dados principais
+### Eventos
 
-- `entitlements`;
-- `entitlement_history`;
-- `library_items`, caso seja necessária uma projeção separada;
-- `game_snapshots`, caso a Library precise exibir dados sem consultar Catalog;
-- `outbox_messages`;
-- `inbox_messages`.
+Consome `LibraryGrantRequestedV1` e publica `LibraryGameGrantedV1` ou
+`LibraryGameGrantFailedV1`.
 
-### Tipos iniciais de entitlement
+Library não inicia compra e não processa pagamento.
 
-```text
-Purchase
-Gift
-Promotion
-Subscription
-DeveloperGrant
-```
-
-### Estados iniciais
-
-```text
-Active
-Suspended
-Revoked
-Expired
-```
-
-### Endpoints principais
-
-```text
-GET /api/library/me
-GET /api/library/me/games/{gameId}
-GET /api/entitlements/{id}
-GET /api/entitlements/check?userId={userId}&gameId={gameId}
-```
-
-Endpoints administrativos de concessão e revogação devem exigir autorização
-forte e não precisam existir na primeira versão.
-
-### Eventos publicados
-
-- `EntitlementGrantedEvent`;
-- `EntitlementGrantFailedEvent`;
-- `EntitlementRevokedEvent`;
-- `LibraryUpdatedEvent`, futuramente.
-
-### Eventos consumidos
-
-- `EntitlementRequestedEvent`;
-- `OrderRefundedEvent`, futuramente;
-- eventos do Catalog para atualizar a projeção de jogos, caso ela seja usada.
-
-### Origem no projeto atual
-
-O serviço nasce do módulo `Library`. A operação de aquisição deve ser removida
-desse módulo: Library deixa de iniciar a compra e passa a materializar o direito
-concedido depois da confirmação financeira.
-
----
-
-## 7. Notifications Service
+## Notifications
 
 ### Identificação
 
 | Item | Valor |
 |---|---|
 | Repositório | `fcg-notifications-service` |
-| Solution | `FiapCloudGames.Notifications.sln` |
-| API/Service Kubernetes | `notifications-api`, opcional |
-| Worker Kubernetes | `notifications-worker` |
-| Banco | `fcg_notifications`, opcional na primeira versão |
-| Usuário do banco | `fcg_notifications_app` |
-| Nome compatível com a atividade | `NotificationsAPI` |
-
-### Finalidade
-
-Transforma acontecimentos do sistema em comunicações para o usuário. Na fase
-acadêmica, simula o envio registrando a mensagem no console.
+| Solution | `FiapCloudGames.Notifications.slnx` |
+| Workloads Kubernetes | `notifications-api`, `notifications-worker` |
+| Banco | `fcg_notifications` |
+| Audience | `notifications-api` |
 
 ### Responsabilidades
 
-- consumir eventos relevantes;
-- gerar mensagem a partir de templates;
-- simular ou executar o envio de e-mail;
-- registrar tentativas e falhas;
-- aplicar retry com limite;
-- impedir notificações duplicadas;
-- respeitar preferências do usuário futuramente;
-- suportar e-mail, push e notificações internas futuramente.
+- consumir eventos relevantes da compra;
+- montar mensagens a partir de templates;
+- simular ou integrar e-mail e outros canais;
+- registrar tentativas e resultados;
+- impedir envios duplicados;
+- permitir consulta e reprocessamento administrativo.
 
-### Fora de responsabilidade
-
-- criar usuários;
-- aprovar pagamentos;
-- conceder jogos;
-- controlar estado de pedidos.
-
-### Estrutura sugerida
+### Endpoints iniciais
 
 ```text
-fcg-notifications-service/
-├── FiapCloudGames.Notifications.sln
-├── src/
-│   ├── FiapCloudGames.Notifications.Api/
-│   ├── FiapCloudGames.Notifications.Worker/
-│   ├── FiapCloudGames.Notifications.Application/
-│   ├── FiapCloudGames.Notifications.Domain/
-│   ├── FiapCloudGames.Notifications.Infrastructure/
-│   ├── FiapCloudGames.Notifications.Contracts/
-│   └── FiapCloudGames.Notifications.Migrations/
-├── tests/
-│   ├── FiapCloudGames.Notifications.UnitTests/
-│   ├── FiapCloudGames.Notifications.IntegrationTests/
-│   └── FiapCloudGames.Notifications.ArchitectureTests/
-├── k8s/
-├── Dockerfile.Api
-├── Dockerfile.Worker
-└── README.md
+GET  /internal/notifications/{notificationId}
+POST /internal/notifications/{notificationId}/retry
 ```
-
-Na primeira versão, `Api`, `Domain` e `Migrations` podem ser omitidos se o
-serviço apenas consumir eventos e escrever no console.
-
-### Dados principais
-
-- `notifications`;
-- `notification_attempts`;
-- `templates`;
-- `user_preferences`, futuramente;
-- `inbox_messages`.
-
-### Endpoints principais
-
-```text
-GET /api/notifications/{id}
-GET /api/notifications/me
-PUT /api/notifications/preferences
-```
-
-Esses endpoints são evoluções; o Worker é suficiente para o primeiro escopo.
-
-### Eventos publicados
-
-- `NotificationSentEvent`, opcional;
-- `NotificationFailedEvent`, opcional.
 
 ### Eventos consumidos
 
-- `UserCreatedEvent`;
-- `PaymentProcessedEvent` para confirmação de pagamento aprovado;
-- `OrderCompletedEvent` para confirmação final de compra;
-- eventos de redefinição de senha e campanhas futuramente.
+- `PaymentApprovedV1`;
+- `PaymentRejectedV1`;
+- `OrderCompletedV1`;
+- `OrderFailedV1`.
 
-### Origem no projeto atual
+Falhas de notificação nunca desfazem pagamento, Library ou pedido.
 
-É um domínio novo.
+## BFF e API Gateway
 
----
+### Web BFF
 
-## 8. Platform e orquestração
+O `fcg-web-bff` atende somente o front-end web:
 
-`fcg-platform` não é um microsserviço. É o repositório que permite executar e
-implantar a plataforma completa.
+- encaminha login e cadastro ao Identity;
+- valida o token `user` ou mantém uma sessão segura no servidor;
+- extrai o `UserId` do `sub` validado;
+- obtém tokens `service` para chamar APIs internas;
+- monta contratos internos sem confiar em `userId` vindo do navegador;
+- agrega respostas quando necessário.
 
-### Estrutura sugerida
+### API Gateway
 
-```text
-fcg-platform/
-├── docker-compose.yml
-├── .env.example
-├── scripts/
-│   ├── create-local-databases.ps1
-│   ├── wait-for-services.ps1
-│   └── demo-purchase-flow.ps1
-├── postgres/
-│   └── init-databases.sql
-├── rabbitmq/
-│   └── definitions.json
-├── k8s/
-│   ├── namespace.yaml
-│   ├── configmaps/
-│   ├── secrets/
-│   ├── identity/
-│   ├── catalog/
-│   ├── pricing/
-│   ├── orders/
-│   ├── payments/
-│   ├── entitlements/
-│   ├── notifications/
-│   ├── rabbitmq/
-│   └── postgres/
-└── README.md
-```
+O `fcg-api-gateway` atende clientes externos:
 
-### Componentes locais
+- encaminha login e cadastro ao Identity;
+- valida tokens de usuário;
+- aplica rate limit, CORS, limites de payload e políticas de borda;
+- extrai o `UserId` do token validado;
+- chama APIs internas com token `service`;
+- nunca expõe rotas `/internal` diretamente.
 
-- PostgreSQL;
-- RabbitMQ com Management UI;
-- sete APIs/Workers de domínio;
-- migrations de cada serviço;
-- gateway opcional;
-- OpenTelemetry Collector opcional;
-- Seq, Grafana ou Jaeger opcionais.
+BFF e Gateway são pontas paralelas. Um não precisa obrigatoriamente encaminhar
+suas chamadas pelo outro.
 
-## Bancos e isolamento
+## RabbitMQ
 
-No ambiente local, um único servidor PostgreSQL pode hospedar todos os bancos:
+### Papel na arquitetura
 
-```text
-PostgreSQL
-├── fcg_identity
-├── fcg_catalog
-├── fcg_pricing
-├── fcg_orders
-├── fcg_payments
-├── fcg_entitlements
-└── fcg_notifications
-```
+RabbitMQ executa a integração assíncrona do fluxo de compra. Ele não substitui
+o banco de cada serviço e não é usado para consultas que exigem resposta
+imediata.
 
-Isso não autoriza compartilhamento de tabelas. Cada serviço usa credencial
-própria e não recebe permissão nos bancos dos demais.
+### Segurança
+
+- TLS nos ambientes compartilhados;
+- credencial própria para cada serviço;
+- permissões mínimas por exchange e queue;
+- secrets fornecidos pelo Kubernetes;
+- Management UI sem exposição pública;
+- mensagens não carregam JWT, refresh token ou client secret.
+
+### Confiabilidade
+
+- Outbox transacional no serviço publicador;
+- Inbox ou registro equivalente no consumidor;
+- `MessageId` único;
+- consumidores idempotentes;
+- retry com limite e backoff;
+- dead-letter queue por fluxo;
+- ack somente depois da persistência local;
+- observabilidade por correlation e causation IDs.
+
+### Topologia inicial
 
 ```text
-fcg_identity_app      -> fcg_identity
-fcg_catalog_app       -> fcg_catalog
-fcg_pricing_app       -> fcg_pricing
-fcg_orders_app        -> fcg_orders
-fcg_payments_app      -> fcg_payments
-fcg_entitlements_app  -> fcg_entitlements
-fcg_notifications_app -> fcg_notifications
+exchange: fcg.events
+
+orders.order-placed.v1              -> payments.order-placed
+payments.payment-approved.v1        -> orders.payment-approved
+payments.payment-approved.v1        -> notifications.payment-approved
+payments.payment-rejected.v1        -> orders.payment-rejected
+payments.payment-rejected.v1        -> notifications.payment-rejected
+orders.library-grant-requested.v1    -> library.grant-requested
+library.game-granted.v1             -> orders.game-granted
+library.game-grant-failed.v1        -> orders.game-grant-failed
+orders.order-completed.v1            -> notifications.order-completed
+orders.order-failed.v1               -> notifications.order-failed
 ```
 
-Não devem existir foreign keys atravessando bancos. Referências externas são
-armazenadas como identificadores, snapshots ou projeções locais.
+Os nomes físicos podem receber prefixo do ambiente, como `dev.`, `hml.` ou
+`prod.`.
 
 ## Contrato mínimo dos eventos
 
-Todos os eventos devem possuir metadados comuns:
+Todo evento terá um envelope comum:
 
-```csharp
-public interface IIntegrationEvent
+```json
 {
-    Guid EventId { get; }
-    DateTimeOffset OccurredAtUtc { get; }
-    Guid CorrelationId { get; }
-    int Version { get; }
+  "messageId": "2ace1057-8815-4675-babe-a672928b328c",
+  "eventType": "OrderPlacedV1",
+  "occurredAt": "2026-09-24T18:00:00Z",
+  "correlationId": "5ae87974-a227-4b97-9f20-3593efdad7ca",
+  "causationId": null,
+  "producer": "orders",
+  "payload": {}
 }
 ```
 
-### UserCreatedEvent
-
-```text
-EventId
-CorrelationId
-OccurredAtUtc
-Version
-UserId
-Name
-Email
-```
-
-### OrderPlacedEvent
-
-```text
-EventId
-CorrelationId
-OccurredAtUtc
-Version
-OrderId
-UserId
-Total
-Currency
-Items[]
-```
-
-Cada item deve possuir ao menos `GameId`, `UnitPrice` e `FinalPrice`.
-
-### PaymentProcessedEvent
-
-```text
-EventId
-CorrelationId
-OccurredAtUtc
-Version
-PaymentId
-OrderId
-UserId
-Amount
-Currency
-Status
-FailureReason
-```
-
-### EntitlementRequestedEvent
-
-```text
-EventId
-CorrelationId
-OccurredAtUtc
-Version
-OrderId
-UserId
-Items[]
-```
-
-### EntitlementGrantedEvent
-
-```text
-EventId
-CorrelationId
-OccurredAtUtc
-Version
-EntitlementId
-OrderId
-UserId
-GameId
-GrantedAtUtc
-```
-
-### OrderCompletedEvent
-
-```text
-EventId
-CorrelationId
-OccurredAtUtc
-Version
-OrderId
-UserId
-Total
-Currency
-CompletedAtUtc
-```
+O schema canônico fica no repositório do produtor. Nesta fase não será criado
+um NuGet para cada contrato. Consumidores mantêm seus DTOs locais e executam
+testes de contrato usando exemplos e JSON Schemas versionados publicados pelo
+produtor.
 
 ## Fluxo completo de compra
 
 ```mermaid
 sequenceDiagram
-    actor User as Usuário
-    participant Orders as Orders API
+    participant Edge as BFF/Gateway
+    participant OrdersApi as Orders API
     participant Catalog as Catalog API
-    participant Pricing as Pricing API
-    participant Broker as RabbitMQ
+    participant Promotions as Promotions API
+    participant Rabbit as RabbitMQ
     participant Payments as Payments Worker
-    participant Entitlements as Entitlements Worker
+    participant OrdersWorker as Orders Worker
+    participant Library as Library Worker
     participant Notifications as Notifications Worker
 
-    User->>Orders: POST /api/orders
-    Orders->>Catalog: Consultar jogo
-    Catalog-->>Orders: Snapshot do jogo
-    Orders->>Pricing: Solicitar cotação
-    Pricing-->>Orders: Preço final e validade
-    Orders->>Orders: Salvar pedido PendingPayment
-    Orders->>Broker: OrderPlacedEvent
-    Broker->>Payments: OrderPlacedEvent
-    Payments->>Payments: Processar pagamento
-    Payments->>Broker: PaymentProcessedEvent
-    Broker->>Orders: PaymentProcessedEvent
-    Orders->>Orders: Marcar PaymentApproved
-    Orders->>Broker: EntitlementRequestedEvent
-    Broker->>Entitlements: EntitlementRequestedEvent
-    Entitlements->>Entitlements: Conceder licença
-    Entitlements->>Broker: EntitlementGrantedEvent
-    Broker->>Orders: EntitlementGrantedEvent
-    Orders->>Orders: Marcar Completed
-    Orders->>Broker: OrderCompletedEvent
-    Broker->>Notifications: OrderCompletedEvent
-    Notifications->>Notifications: Enviar confirmação
+    Edge->>OrdersApi: Criar pedido com token service e UserId
+    OrdersApi->>Catalog: Obter jogo e preço-base
+    Catalog-->>OrdersApi: Snapshot do jogo
+    OrdersApi->>Promotions: Calcular desconto
+    Promotions-->>OrdersApi: Desconto e preço final
+    OrdersApi->>OrdersApi: Persistir pedido e Outbox
+    OrdersApi-->>Edge: 202 Accepted + OrderId
+    OrdersApi->>Rabbit: OrderPlacedV1
+    Rabbit->>Payments: OrderPlacedV1
+    Payments->>Payments: Processar idempotentemente
+    Payments->>Rabbit: PaymentApprovedV1
+    Rabbit->>OrdersWorker: PaymentApprovedV1
+    OrdersWorker->>Rabbit: LibraryGrantRequestedV1
+    Rabbit->>Library: LibraryGrantRequestedV1
+    Library->>Library: Conceder jogo idempotentemente
+    Library->>Rabbit: LibraryGameGrantedV1
+    Rabbit->>OrdersWorker: LibraryGameGrantedV1
+    OrdersWorker->>Rabbit: OrderCompletedV1
+    Rabbit->>Notifications: OrderCompletedV1
 ```
 
-## Topologia inicial de filas
+O cliente consulta o estado do pedido. Atualização em tempo real por WebSocket
+ou Server-Sent Events pode ser adicionada sem alterar o fluxo principal.
 
-Uma fila é criada por consumidor, não apenas por tipo de evento. Assim,
-consumidores diferentes recebem sua própria cópia da mensagem.
+## Kubernetes
+
+### Repositório de plataforma
 
 ```text
-identity.user-created.notifications
-orders.order-placed.payments
-payments.payment-processed.orders
-payments.payment-processed.notifications
-orders.entitlement-requested.entitlements
-entitlements.entitlement-granted.orders
-orders.order-completed.notifications
+fcg-platform/
+├── environments/
+│   ├── dev/
+│   ├── hml/
+│   └── prod/
+├── base/
+│   ├── namespaces/
+│   ├── rabbitmq/
+│   ├── ingress/
+│   ├── observability/
+│   └── policies/
+└── README.md
 ```
 
-## Configuração e secrets
+Cada repositório de aplicação mantém o manifesto ou chart do próprio workload.
+O repositório de plataforma compõe os ambientes e mantém os componentes
+compartilhados.
 
-### ConfigMap
+### Regras iniciais
 
-- host do RabbitMQ;
-- nomes de filas;
-- URLs internas dos serviços;
-- nível de log;
-- timeouts;
-- quantidade máxima de retries;
-- região e moeda padrão.
+- `Deployment` separado para API e Worker;
+- `Service` ClusterIP somente para componentes HTTP;
+- Ingress público somente para BFF e Gateway;
+- Identity e APIs de domínio acessíveis apenas internamente;
+- `ConfigMap` somente para configuração não sensível;
+- `Secret` ou cofre externo para credenciais;
+- readiness e liveness probes;
+- requests e limits de CPU e memória;
+- `PodDisruptionBudget` quando houver mais de uma réplica;
+- `NetworkPolicy` restringindo comunicação entre workloads;
+- migrations executadas por Job controlado, não por todas as réplicas;
+- RabbitMQ com armazenamento persistente e política de backup.
 
-### Secret
+Kubernetes não substitui migrations, retry de aplicação, idempotência ou
+Outbox/Inbox.
 
-- connection strings;
-- senha do RabbitMQ;
-- chave privada do Identity;
-- chaves de provedores de pagamento;
-- credenciais de e-mail;
-- tokens de observabilidade.
+## Bancos e isolamento
 
-## Autenticação entre serviços
+Em desenvolvimento pode existir uma única instância PostgreSQL, mas com bancos
+e usuários separados:
 
-O Identity assina o JWT. APIs públicas validam a assinatura e as claims sem
-consultar o Identity a cada requisição.
+```text
+fcg_identity       <- fcg_identity_app
+fcg_catalog        <- fcg_catalog_app
+fcg_promotions     <- fcg_promotions_app
+fcg_orders         <- fcg_orders_app
+fcg_payments       <- fcg_payments_app
+fcg_library        <- fcg_library_app
+fcg_notifications  <- fcg_notifications_app
+```
 
-É preferível usar assinatura assimétrica:
-
-- Identity guarda a chave privada;
-- demais APIs recebem apenas a chave pública;
-- Workers confiam em eventos autenticados pela infraestrutura e validam os
-  identificadores de negócio;
-- chamadas administrativas entre serviços usam credenciais de máquina.
+Um usuário de aplicação não recebe permissão no banco de outro serviço.
 
 ## Observabilidade mínima
 
-Todos os serviços devem registrar:
+- logs estruturados;
+- `CorrelationId` em HTTP e mensagens;
+- `MessageId` e `CausationId` nos eventos;
+- métricas de API, Worker, RabbitMQ e banco;
+- contagem de retries e mensagens em dead-letter;
+- tracing distribuído;
+- dashboards por serviço;
+- alertas para indisponibilidade, backlog e falha repetida.
 
-- `TraceId`;
-- `CorrelationId`;
-- `EventId`;
-- `OrderId`, quando aplicável;
-- nome do consumidor;
-- quantidade de tentativas;
-- duração da operação;
-- resultado sem expor informações sensíveis.
-
-Health checks recomendados:
-
-```text
-/health/live
-/health/ready
-```
-
-O liveness não deve depender de serviços externos. O readiness pode verificar
-banco, broker e outras dependências necessárias para aceitar trabalho.
+Dados sensíveis, tokens e secrets nunca são registrados.
 
 ## Estratégia de testes
 
-Cada repositório deve possuir:
+Cada serviço terá:
 
-- testes de domínio e casos de uso;
-- testes de contrato dos eventos;
-- testes de persistência e migrations;
-- testes de consumidores com MassTransit Test Harness;
-- testes de idempotência;
-- testes de integração com PostgreSQL e RabbitMQ;
-- poucos testes ponta a ponta no repositório de plataforma.
+- testes unitários de domínio;
+- testes de integração com o banco;
+- testes de API;
+- testes de autorização;
+- testes de arquitetura;
+- testes de contrato HTTP;
+- testes de contrato de eventos;
+- testes de idempotência de consumidor;
+- testes de integração com RabbitMQ usando ambiente efêmero.
 
-Cenários ponta a ponta essenciais:
+O ambiente integrado terá testes ponta a ponta para login, catálogo, promoção,
+compra aprovada, pagamento rejeitado, duplicidade, recuperação de falha e
+consulta da Library.
 
-1. cadastro publica evento e gera notificação;
-2. pagamento aprovado conclui o pedido e concede o jogo;
-3. pagamento rejeitado não concede o jogo;
-4. evento duplicado não duplica pagamento ou entitlement;
-5. falha temporária permite retry sem corromper o estado;
-6. usuário não compra o mesmo jogo duas vezes, conforme regra definida;
-7. consulta da Library retorna somente entitlements ativos.
+## Decisões fechadas
 
-## Migração dos módulos atuais
-
-| Componente atual | Destino |
+| Tema | Decisão |
 |---|---|
-| `Identity` | Identity Service |
-| `Catalog` | Catalog Service |
-| `Promotions` | Pricing Service |
-| `Library` | Entitlements Service |
-| `Api` compartilhada | Substituída por APIs independentes |
-| Migrations de Identity | Identity Migrations |
-| Migrations de Catalog | Catalog Migrations |
-| Migrations de Promotions | Pricing Migrations |
-| Migrations de Library | Entitlements Migrations |
-| Building Blocks | Um pacote interno `FiapCloudGames.BuildingBlocks`, com extração seletiva |
-| Aquisição imediata da Library | Substituída pela Saga de Orders |
-| Banco físico compartilhado | Bancos lógicos exclusivos por serviço |
+| Módulos de domínio | Somente os sete listados neste documento |
+| Compartilhamento .NET | Um único pacote Building Blocks inicialmente |
+| Borda web | BFF |
+| Outros clientes | API Gateway |
+| Identidade externa | Sempre acessada por BFF ou Gateway |
+| Token interno HTTP | `service` |
+| Mensageria | RabbitMQ |
+| Garantia de publicação | Outbox |
+| Garantia de consumo | Inbox e idempotência |
+| Orquestração de compra | Orders mantém o estado do processo |
+| Contratos de evento | JSON Schema versionado no produtor, sem novo NuGet inicialmente |
+| Plataforma | Kubernetes |
+| Manifests compartilhados | `fcg-platform` |
+| Banco | Um banco e usuário por domínio |
 
-## Ordem recomendada de implementação
+## Pontos que podem ser adiados sem mudar a arquitetura
 
-O passo a passo completo, incluindo critérios de conclusão e migração de dados,
-está em [Roteiro de migração para microsserviços](migration-roadmap.md).
+- provedor real de pagamento;
+- provedor real de e-mail;
+- cofre de secrets gerenciado;
+- autoscaling baseado no backlog do RabbitMQ;
+- service mesh;
+- atualização em tempo real no front-end;
+- alta disponibilidade do RabbitMQ no ambiente acadêmico.
 
-A primeira etapa da migração usará HTTP e não depende de RabbitMQ ou
-Kubernetes:
-
-1. Inventariar dependências, dados e contratos atuais.
-2. Criar e publicar `FiapCloudGames.BuildingBlocks`.
-3. Definir o padrão repetível dos repositórios.
-4. Extrair Identity Service.
-5. Extrair Catalog Service.
-6. Extrair Pricing Service.
-7. Criar Orders Service com pedido e snapshot de preço.
-8. Criar Payments Service com integração HTTP idempotente.
-9. Extrair Library para Entitlements Service.
-10. Validar o fluxo completo de compra por HTTP.
-11. Criar Notifications, BFF e Gateway quando entrarem no escopo da entrega.
-12. Desativar gradualmente as implementações antigas.
-
-RabbitMQ, eventos, Workers e Kubernetes permanecem como evolução posterior.
-
-## Escopo mínimo versus evolução
-
-Para uma primeira entrega funcional, alguns elementos podem ser simplificados:
-
-- Notifications pode ser apenas um Worker sem banco;
-- Payments pode simular o resultado;
-- Orders pode aceitar somente um item por pedido;
-- pode existir apenas uma moeda;
-- Catalog e Pricing podem usar HTTP síncrono;
-- Entitlements pode manter somente `UserId`, `GameId` e `OrderId`;
-- não são necessários carrinho, presente, assinatura ou reembolso.
-
-As fronteiras propostas permitem adicionar essas capacidades depois sem mover
-novamente as responsabilidades centrais entre serviços.
+Esses itens mudam implementação e operação, mas não criam novos módulos.

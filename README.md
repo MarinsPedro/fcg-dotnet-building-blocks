@@ -22,7 +22,11 @@ de negócio.
 - health checks;
 - configuração de trace e span nos logs.
 
-RabbitMQ, MassTransit e Kubernetes não fazem parte da primeira etapa.
+RabbitMQ e Kubernetes fazem parte da arquitetura-alvo. A versão atual do
+pacote já cobre HTTP, autenticação e observabilidade básica; o namespace
+`Messaging` para RabbitMQ ainda será implementado no mesmo NuGet. Manifests de
+Kubernetes não pertencem ao pacote: ficam nos repositórios das aplicações e no
+repositório técnico `fcg-platform`.
 
 ## Instalação
 
@@ -82,7 +86,7 @@ padronizar também as respostas `401` e `403` sem corpo.
   },
   "ServiceAuthentication": {
     "TokenEndpoint": "https://identity.internal/connect/token",
-    "ClientId": "orders-service",
+    "ClientId": "orders-api",
     "ClientSecret": "fornecido-por-secret-ou-user-secrets",
     "RequireHttps": true,
     "RefreshBeforeExpiration": "00:00:30"
@@ -107,7 +111,7 @@ builder.Services.AddAuthorization(options =>
         policy => policy
             .RequireAuthenticatedUser()
             .RequireServiceToken()
-            .RequireClients("orders-service")
+            .RequireClients("orders-api")
             .RequireScopes("payments.process"));
 });
 ```

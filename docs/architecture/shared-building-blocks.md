@@ -12,13 +12,17 @@ necessidade concreta.
 Este repositório e pacote não representam um microsserviço. Eles não possuem
 banco de dados, API própria ou deploy em produção.
 
+RabbitMQ faz parte da arquitetura-alvo e terá convenções técnicas no namespace
+`Messaging`. Kubernetes também faz parte da arquitetura, mas seus manifests e
+recursos operacionais não pertencem ao NuGet.
+
 ## Decisão arquitetural
 
 Será criado um repositório separado:
 
 ```text
 Repositório: fcg-dotnet-building-blocks
-Solution:    FiapCloudGames.BuildingBlocks.sln
+Solution:    FiapCloudGames.BuildingBlocks.slnx
 Pacote:      FiapCloudGames.BuildingBlocks
 ```
 
@@ -27,7 +31,7 @@ Cada API ou Worker instalará somente esse pacote:
 ```xml
 <PackageReference
     Include="FiapCloudGames.BuildingBlocks"
-    Version="1.0.0" />
+    Version="0.1.0" />
 ```
 
 O pacote poderá conter apenas comportamentos técnicos comuns. Entidades,
@@ -53,7 +57,7 @@ pequeno e com finalidade exclusivamente técnica.
 
 ```text
 fcg-dotnet-building-blocks/
-├── FiapCloudGames.BuildingBlocks.sln
+├── FiapCloudGames.BuildingBlocks.slnx
 ├── Directory.Build.props
 ├── Directory.Packages.props
 ├── README.md
@@ -142,7 +146,7 @@ negócio permanecem no serviço, por exemplo:
 ```text
 OrderAlreadyPaidException
 GameUnavailableException
-EntitlementAlreadyExistsException
+LibraryGameAlreadyExistsException
 ```
 
 ### Hosting
@@ -207,10 +211,10 @@ app.UseExceptionHandler();
 app.UseFiapCorrelationId();
 ```
 
-### Messaging, evolução futura
+### Messaging, planejado para a Fase 2
 
-Quando RabbitMQ entrar no escopo, este módulo poderá padronizar a integração
-com o broker e o MassTransit:
+RabbitMQ faz parte do escopo arquitetural. Este módulo padronizará somente os
+aspectos técnicos da integração com o broker:
 
 - configuração do broker;
 - convenções para filas e exchanges;
@@ -220,7 +224,7 @@ com o broker e o MassTransit:
 - dead-letter queue;
 - filtros de consumo e publicação;
 - observabilidade;
-- configuração de outbox e inbox.
+- suporte técnico para outbox e inbox, sem fornecer `DbContext` compartilhado.
 
 O módulo fornece a infraestrutura para publicar e consumir mensagens, mas não
 é dono dos eventos de negócio.
@@ -241,14 +245,13 @@ Ele não deve conter eventos como:
 ```text
 OrderPlaced
 PaymentApproved
-EntitlementGranted
+LibraryGameGranted
 UserRegistered
 ```
 
 Cada evento pertence ao serviço que o produz e deve ser versionado junto de
-seu contrato de integração.
-
-Na primeira etapa de migração, esse módulo não será implementado.
+seu contrato de integração. A implementação de `Messaging` ainda está
+pendente, mas continuará no mesmo pacote NuGet inicialmente.
 
 ## Configuração em uma API
 
@@ -280,7 +283,8 @@ app.Run();
 Instalar o pacote não ativa todas as funcionalidades automaticamente. Cada
 aplicação chama apenas os métodos de configuração que precisa.
 
-Em uma evolução futura, um Worker sem endpoints HTTP poderá usar:
+Depois da implementação de `Messaging`, um Worker sem endpoints HTTP poderá
+usar:
 
 ```csharp
 builder.AddFiapServiceDefaults();
@@ -315,7 +319,7 @@ Exemplos adequados:
 
 Não devem entrar no pacote:
 
-- entidades como `User`, `Game`, `Order`, `Payment` e `Entitlement`;
+- entidades como `User`, `Game`, `Order`, `Payment` e `LibraryGame`;
 - value objects específicos de um domínio;
 - repositories;
 - `DbContext` e migrations;
@@ -361,16 +365,14 @@ vários serviços, elas poderão ser avaliadas separadamente.
 
 Os contratos de eventos não entram no pacote geral de building blocks.
 
-Inicialmente, o contrato pode permanecer no repositório do serviço produtor.
-Quando consumidores em outros repositórios precisarem compilá-lo, há duas
-opções:
+O schema canônico permanecerá no repositório do serviço produtor, versionado
+em JSON Schema. Cada consumidor manterá seu DTO local e executará testes de
+contrato contra o schema e os exemplos do produtor.
 
-1. publicar um pacote pequeno pertencente ao produtor, como
-   `FiapCloudGames.Payments.IntegrationEvents`;
-2. manter um schema versionado em AsyncAPI, JSON Schema ou Protobuf.
-
-Essa necessidade não obriga a criar esses pacotes agora. A decisão será tomada
-quando o primeiro contrato precisar ser consumido entre repositórios.
+Essa decisão evita criar vários pacotes NuGet agora e impede que contratos de
+domínio entrem no Building Blocks. Se a manutenção manual se tornar um problema
+comprovado, geração de código ou pacotes específicos do produtor poderão ser
+avaliados posteriormente.
 
 ## Recursos comuns que não pertencem ao NuGet
 
@@ -418,16 +420,16 @@ execução entre os microsserviços.
 
 ## Versionamento e distribuição
 
-O pacote deve ser publicado em um feed NuGet privado por uma pipeline. O feed
-exato ainda pode ser escolhido entre GitHub Packages, Azure Artifacts ou outra
-solução acessível ao projeto.
+O pacote será publicado no GitHub Packages por GitHub Actions. A publicação é
+disparada por tags `v*` e a primeira versão planejada é `0.1.0`.
 
 Será utilizado versionamento semântico:
 
 ```text
-1.0.1 -> correção compatível
-1.1.0 -> nova funcionalidade compatível
-2.0.0 -> alteração incompatível
+0.1.1 -> correção compatível durante a migração
+0.2.0 -> nova funcionalidade compatível durante a migração
+1.0.0 -> primeira API considerada estável
+2.0.0 -> alteração incompatível depois da estabilização
 ```
 
 Cada repositório deve fixar explicitamente a versão utilizada, preferencialmente
@@ -437,7 +439,7 @@ no seu `Directory.Packages.props`:
 <ItemGroup>
   <PackageVersion
       Include="FiapCloudGames.BuildingBlocks"
-      Version="1.0.0" />
+      Version="0.1.0" />
 </ItemGroup>
 ```
 
@@ -515,13 +517,32 @@ FiapCloudGames.BuildingBlocks
 
 Essa divisão futura é uma opção, não um requisito da Fase 2.
 
-## Decisões pendentes que não bloqueiam a implementação
+## Avaliação das decisões
 
-- provedor do feed NuGet privado;
-- versão inicial `0.x` ou `1.0.0`;
-- ferramenta exata de CI/CD;
-- adoção imediata ou futura de um template `dotnet new`;
-- formato de distribuição dos contratos de eventos entre repositórios.
+### Fechadas
+
+| Tema | Decisão |
+|---|---|
+| Feed privado | GitHub Packages |
+| Versão inicial | `0.1.0` |
+| CI/CD | GitHub Actions |
+| Quantidade de pacotes | Um único NuGet inicialmente |
+| Contratos de eventos | JSON Schema no produtor, sem pacote adicional |
+| Template `dotnet new` | Avaliar somente após o segundo serviço |
+| Broker | RabbitMQ |
+| Plataforma | Kubernetes, fora do NuGet |
+
+### Pendentes antes de implementar `Messaging`
+
+| Decisão | Recomendação inicial | Por que ainda precisa ser validada |
+|---|---|---|
+| Cliente RabbitMQ | Avaliar MassTransit primeiro | Facilita consumidores, retry e Outbox, mas adiciona uma abstração relevante |
+| Outbox/Inbox | Implementação por serviço com EF Core | Cada serviço precisa manter seu próprio `DbContext` e migrations |
+| Política de retry | Poucas tentativas com backoff e dead-letter | Os valores dependem do tipo de mensagem e do ambiente |
+| Provisionamento de topologia | Declarativo e idempotente | É necessário definir se aplicação ou plataforma cria exchanges e queues |
+
+Essas quatro decisões bloqueiam apenas a implementação do namespace
+`Messaging`; não bloqueiam o uso atual de autenticação, Web e observabilidade.
 
 ## Resumo
 
