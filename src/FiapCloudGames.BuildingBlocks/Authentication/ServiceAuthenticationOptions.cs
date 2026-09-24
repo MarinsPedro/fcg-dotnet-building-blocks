@@ -20,6 +20,12 @@ public sealed class ServiceAuthenticationOptions
     /// <summary>Obtém ou define a audience desta API.</summary>
     public string Audience { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Obtém ou define os tipos de token aceitos pela aplicação.
+    /// APIs internas aceitam somente <c>service</c> por padrão.
+    /// </summary>
+    public string[] AllowedTokenUses { get; set; } = [FiapTokenUses.Service];
+
     /// <summary>Indica se os metadados exigem HTTPS.</summary>
     public bool RequireHttpsMetadata { get; set; } = true;
 

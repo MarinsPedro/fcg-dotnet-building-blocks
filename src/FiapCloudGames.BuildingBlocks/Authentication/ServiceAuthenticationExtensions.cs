@@ -35,6 +35,11 @@ public static class ServiceAuthenticationExtensions
                 options => !string.IsNullOrWhiteSpace(options.Audience),
                 $"Configure '{sectionName}:Audience'.")
             .Validate(
+                options => options.AllowedTokenUses is { Length: > 0 } &&
+                    options.AllowedTokenUses.All(FiapTokenUses.IsSupported),
+                $"Configure '{sectionName}:AllowedTokenUses' somente com " +
+                $"'{FiapTokenUses.User}' ou '{FiapTokenUses.Service}'.")
+            .Validate(
                 options =>
                     IsValidMetadataEndpoint(
                         options.Authority,
@@ -86,9 +91,32 @@ public static class ServiceAuthenticationExtensions
                             NameClaimType = FiapClaimTypes.Subject,
                             RoleClaimType = FiapClaimTypes.Role
                         };
+
+                    jwt.Events.OnTokenValidated = context =>
+                    {
+                        var failure = TokenUseValidator.GetFailure(
+                            context.Principal!,
+                            options.AllowedTokenUses);
+
+                        if (failure is not null)
+                        {
+                            context.Fail(failure);
+                        }
+
+                        return Task.CompletedTask;
+                    };
                 });
 
-        services.AddAuthorization();
+        services.AddAuthorization(options =>
+        {
+            var authenticatedByDefault = new AuthorizationPolicyBuilder(
+                    JwtBearerDefaults.AuthenticationScheme)
+                .RequireAuthenticatedUser()
+                .Build();
+
+            options.DefaultPolicy = authenticatedByDefault;
+            options.FallbackPolicy = authenticatedByDefault;
+        });
         services.AddSingleton<IAuthorizationHandler, ScopeAuthorizationHandler>();
         services.AddHttpContextAccessor();
         services.AddScoped<ICallerContext, HttpCallerContext>();

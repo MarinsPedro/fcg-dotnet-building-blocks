@@ -14,6 +14,9 @@ public static class FiapClaimTypes
     /// <summary>Identificador do sujeito do token.</summary>
     public const string Subject = "sub";
 
+    /// <summary>Indica se o token representa um usuário ou uma aplicação.</summary>
+    public const string TokenUse = "token_use";
+
     /// <summary>Papel do sujeito autenticado.</summary>
     public const string Role = "role";
 }

@@ -92,8 +92,10 @@ Responsável pela autenticação técnica entre aplicações:
 
 - configuração do JWT Bearer;
 - validação de issuer, audience, assinatura e expiração;
-- leitura de `client_id` e scopes;
-- registro de policies técnicas;
+- validação de `token_use=user` ou `token_use=service`;
+- leitura de `client_id`, scopes e usuário somente na borda;
+- autenticação obrigatória por padrão;
+- registro de policies por tipo de token, cliente e scopes;
 - obtenção e cache de access tokens técnicos;
 - abstração para identificar a aplicação chamadora;
 - respostas padronizadas de `401` e `403`.
@@ -103,14 +105,20 @@ Uma abstração comum pode representar o chamador:
 ```csharp
 public interface ICallerContext
 {
-    string ClientId { get; }
+    string? TokenUse { get; }
+    string? ClientId { get; }
+    Guid? UserId { get; }
     IReadOnlyCollection<string> Scopes { get; }
+    bool IsUser { get; }
+    bool IsService { get; }
     bool IsAuthenticated { get; }
 }
 ```
 
 O nome `ICallerContext` é preferível a `ICurrentUserContext`, porque o chamador
 pode ser um BFF, Gateway, API ou Worker, e não necessariamente um usuário.
+Em APIs internas, tokens `service` nunca produzem `UserId`; o identificador do
+usuário chega pelo contrato específico do endpoint, quando necessário.
 
 O módulo não decide se um pedido pode ser alterado ou se um pagamento pode ser
 processado. Essas decisões continuam no domínio responsável.

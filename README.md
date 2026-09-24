@@ -8,9 +8,11 @@ de negócio.
 
 ## Funcionalidades
 
-- validação de JWT técnico por Authority/JWKS;
-- `ICallerContext` com `client_id`, scopes e usuário opcional;
-- policies por cliente e scopes;
+- validação de JWT por Authority/JWKS e `token_use`;
+- somente tokens `user` e `service`, sem token exchange;
+- `ICallerContext` com tipo do token, `client_id`, scopes e usuário da borda;
+- autenticação obrigatória por padrão, com `AllowAnonymous` explícito;
+- policies por tipo de token, cliente e scopes;
 - cliente Client Credentials com cache de token;
 - tratamento global de exceções com `IExceptionHandler`;
 - respostas `application/problem+json` padronizadas;
@@ -55,7 +57,7 @@ app.UseFiapApiDefaults();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapFiapHealthChecks();
+app.MapFiapHealthChecks().AllowAnonymous();
 app.MapControllers();
 
 await app.RunAsync();
@@ -72,6 +74,9 @@ padronizar também as respostas `401` e `403` sem corpo.
     "Authority": "https://identity.internal",
     "Issuer": "fiap-cloud-games-identity",
     "Audience": "orders-api",
+    "AllowedTokenUses": [
+      "service"
+    ],
     "RequireHttpsMetadata": true,
     "ClockSkew": "00:00:30"
   },
@@ -85,6 +90,10 @@ padronizar também as respostas `401` e `403` sem corpo.
 }
 ```
 
+APIs internas aceitam apenas `service` por padrão. Um BFF ou API Gateway que
+valida tokens externos deve configurar `"AllowedTokenUses": ["user"]`.
+Tokens `user` nunca são encaminhados às APIs internas.
+
 O `ClientSecret` nunca deve ser commitado. Em desenvolvimento, use user-secrets;
 nos ambientes de execução, use o mecanismo de secrets disponível.
 
@@ -97,6 +106,7 @@ builder.Services.AddAuthorization(options =>
         "ProcessPayments",
         policy => policy
             .RequireAuthenticatedUser()
+            .RequireServiceToken()
             .RequireClients("orders-service")
             .RequireScopes("payments.process"));
 });
@@ -119,6 +129,30 @@ var token = await tokenProvider.GetAccessTokenAsync(
 
 O provider normaliza os scopes e reutiliza o token até próximo da expiração.
 Ele nunca registra o token ou o client secret.
+
+## Usuário nas chamadas internas
+
+O BFF ou Gateway obtém o usuário do `sub` do token `user`, remove qualquer
+identificador de usuário fornecido externamente e cria um novo contrato para a
+API interna:
+
+```http
+POST /internal/orders
+Authorization: Bearer <token-service-do-bff>
+Content-Type: application/json
+
+{
+  "userId": "47de4c37-34ab-4084-a293-e46229c34aad",
+  "gameId": "80fdc742-e7c1-4564-a269-8d52784bec44"
+}
+```
+
+O `userId` pode ficar no body ou na rota conforme o recurso. Query string fica
+reservada a filtros. A API confia nesse valor somente depois de validar o token
+`service`, a audience, o scope e o `client_id` autorizado.
+
+O pacote não lê `userId` do body, rota ou query. Esse valor pertence ao contrato
+do endpoint. Em tokens `service`, `ICallerContext.UserId` é sempre `null`.
 
 ## Desenvolvimento
 

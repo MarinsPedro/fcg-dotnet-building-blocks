@@ -1,7 +1,7 @@
 namespace FiapCloudGames.BuildingBlocks.Authentication;
 
 /// <summary>
-/// Configura a obtenção de tokens técnicos pelo fluxo Client Credentials.
+/// Configura a obtenção de tokens <c>service</c> por Client Credentials.
 /// </summary>
 public sealed class ServiceTokenOptions
 {

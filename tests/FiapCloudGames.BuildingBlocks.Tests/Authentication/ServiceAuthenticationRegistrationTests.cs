@@ -1,5 +1,7 @@
 using FiapCloudGames.BuildingBlocks.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -45,5 +47,20 @@ public sealed class ServiceAuthenticationRegistrationTests
         Assert.Equal(
             TimeSpan.FromSeconds(20),
             options.TokenValidationParameters.ClockSkew);
+        Assert.NotNull(options.Events.OnTokenValidated);
+
+        var authenticationOptions = provider
+            .GetRequiredService<IOptions<AuthorizationOptions>>()
+            .Value;
+        Assert.NotNull(authenticationOptions.DefaultPolicy);
+        Assert.NotNull(authenticationOptions.FallbackPolicy);
+        Assert.Contains(
+            authenticationOptions.FallbackPolicy.Requirements,
+            requirement => requirement is DenyAnonymousAuthorizationRequirement);
+
+        var serviceOptions = provider
+            .GetRequiredService<IOptions<ServiceAuthenticationOptions>>()
+            .Value;
+        Assert.Equal([FiapTokenUses.Service], serviceOptions.AllowedTokenUses);
     }
 }

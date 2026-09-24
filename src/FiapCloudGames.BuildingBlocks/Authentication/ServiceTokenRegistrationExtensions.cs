@@ -5,7 +5,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 namespace FiapCloudGames.BuildingBlocks.Authentication;
 
 /// <summary>
-/// Registra o cliente de tokens técnicos.
+/// Registra o cliente de tokens <c>service</c>.
 /// </summary>
 public static class ServiceTokenRegistrationExtensions
 {

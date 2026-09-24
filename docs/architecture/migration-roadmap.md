@@ -194,6 +194,8 @@ escopo atual.
 - [x] implementar `AddFiapServiceDefaults`;
 - [x] implementar `AddFiapApiDefaults`;
 - [x] implementar validação de token técnico;
+- [x] restringir tokens aos tipos `user` e `service`;
+- [x] proteger endpoints por padrão com `AllowAnonymous` explícito;
 - [x] implementar `ICallerContext`;
 - [x] implementar tratamento com `ProblemDetails`;
 - [x] implementar correlation ID;
@@ -267,6 +269,9 @@ fcg-identity-service
 - [ ] publicar a chave pública ou JWKS;
 - [ ] cadastrar service clients;
 - [ ] implementar Client Credentials;
+- [ ] emitir `token_use=user` para a borda;
+- [ ] emitir `token_use=service` para chamadas internas;
+- [ ] garantir `sub == client_id` em tokens de serviço;
 - [ ] validar cliente, audience e scope;
 - [ ] instalar `FiapCloudGames.BuildingBlocks`;
 - [ ] criar testes de autenticação e autorização;

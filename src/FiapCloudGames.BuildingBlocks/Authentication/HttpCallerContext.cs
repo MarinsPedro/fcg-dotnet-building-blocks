@@ -20,12 +20,20 @@ internal sealed class HttpCallerContext : ICallerContext
     public string? ClientId =>
         principal.FindFirstValue(FiapClaimTypes.ClientId);
 
+    public string? TokenUse =>
+        principal.FindFirstValue(FiapClaimTypes.TokenUse);
+
     public IReadOnlySet<string> Scopes => scopes.Value;
 
     public Guid? UserId
     {
         get
         {
+            if (!IsUser)
+            {
+                return null;
+            }
+
             var subject =
                 principal.FindFirstValue(FiapClaimTypes.Subject) ??
                 principal.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -35,6 +43,12 @@ internal sealed class HttpCallerContext : ICallerContext
                 : null;
         }
     }
+
+    public bool IsUser =>
+        string.Equals(TokenUse, FiapTokenUses.User, StringComparison.Ordinal);
+
+    public bool IsService =>
+        string.Equals(TokenUse, FiapTokenUses.Service, StringComparison.Ordinal);
 
     public bool IsAuthenticated =>
         principal.Identity?.IsAuthenticated == true;

@@ -1,414 +1,183 @@
 # Arquitetura-alvo de autenticação e autorização
 
-## Status deste documento
+## Status
 
-Este documento descreve o modelo de autenticação e autorização planejado para
-a arquitetura de microsserviços. Ele não representa integralmente o estado
-atual do monólito.
+Este documento registra as decisões obrigatórias para a migração do FIAP
+Cloud Games. A primeira etapa utiliza HTTP entre os serviços, sem RabbitMQ e
+sem Kubernetes.
 
-A primeira etapa da migração utilizará chamadas HTTP entre serviços. RabbitMQ,
-Workers e Kubernetes descritos neste documento representam a evolução futura e
-não são pré-requisitos para separar os repositórios.
-
-O comportamento atualmente implementado está documentado em
-[Autenticação e autorização atual](../development/authentication-authorization.md).
-A decomposição planejada dos serviços está em
-[Arquitetura-alvo de microsserviços](target-microservices.md).
-
-## Objetivo
-
-Permitir que novos integrantes entendam:
-
-- onde o usuário faz login;
-- onde o token do usuário é armazenado e validado;
-- como BFF e API Gateway chamam as APIs internas;
-- como os microsserviços se autenticam entre si;
-- quando o `UserId` precisa ser propagado;
-- como proteger chamadas HTTP e eventos do RabbitMQ;
-- quais responsabilidades pertencem ao Identity e a cada API.
-
-## Resumo executivo
-
-O sistema adotará autenticação de usuário na borda e autenticação de aplicação
-na rede interna.
-
-```text
-Usuário web
-    -> BFF valida sessão do usuário
-    -> BFF chama APIs com token técnico
-
-Cliente externo
-    -> API Gateway valida o token externo
-    -> Gateway chama APIs com token técnico
-
-Microsserviço
-    -> solicita token técnico ao Identity
-    -> chama outro microsserviço
-
-Worker
-    -> autentica no RabbitMQ com credencial própria
-    -> não recebe o JWT original do usuário
-```
-
-Regras centrais:
+## Decisões fechadas
 
 1. Somente o Identity emite tokens.
-2. BFF e Gateway validam a identidade do usuário na borda.
-3. APIs internas validam tokens técnicos, não necessariamente o JWT original
-   do usuário.
-4. Cada aplicação possui `client_id`, credencial e permissões próprias.
-5. O `client_secret` é enviado somente ao Identity.
-6. APIs de destino recebem apenas access tokens assinados.
-7. O `UserId` é propagado somente quando necessário para o negócio.
-8. APIs internas nunca confiam em um `UserId` sem antes autenticar a aplicação
-   que o enviou.
-9. Regras de negócio permanecem nos microsserviços.
-10. Eventos não transportam o JWT do usuário.
+2. Existem apenas dois tipos de access token: `user` e `service`.
+3. Não serão implementados token exchange, token delegado, `act` ou
+   `origin_client_id`.
+4. Tokens `user` são aceitos somente nas bordas: BFF e API Gateway.
+5. APIs internas e Workers usam somente tokens `service`.
+6. Cada BFF, Gateway, API e Worker possui `client_id` e segredo próprios.
+7. Cada API possui uma audience própria.
+8. Todo endpoint exige autenticação por padrão. Endpoints públicos usam
+   `AllowAnonymous` explicitamente.
+9. O BFF ou Gateway obtém o usuário do `sub` do token e envia o `userId` no
+   contrato interno, pelo body ou pela rota.
+10. Query string é usada para filtros, não como padrão para identidade em
+    comandos.
+11. APIs internas confiam no `userId` somente depois de autenticar e autorizar
+    a aplicação que o enviou.
+12. Regras de negócio permanecem na API dona do domínio.
 
-## Componentes e fronteiras de confiança
+## Modelo de confiança
 
-```mermaid
-flowchart LR
-    User[Usuário web] --> BFF[Web BFF]
-    External[Cliente externo] --> Gateway[API Gateway]
-
-    BFF --> Identity[Identity / Token Service]
-    Gateway --> Identity
-
-    BFF -- token técnico --> Orders[Orders API]
-    BFF -- token técnico --> Catalog[Catalog API]
-    BFF -- token técnico --> Entitlements[Entitlements API]
-
-    Gateway -- token técnico --> Orders
-    Gateway -- token técnico --> Catalog
-
-    Orders --> Identity
-    Orders -- token técnico --> Pricing[Pricing API]
-    Orders -- evento --> Broker[(RabbitMQ)]
-    Broker --> Payments[Payments Worker]
-    Broker --> Notifications[Notifications Worker]
-```
-
-### Borda pública
-
-Podem ser expostos externamente:
-
-- Web BFF;
-- API Gateway;
-- endpoints explicitamente públicos, por decisão arquitetural.
-
-O Identity não é exposto diretamente. Para clientes externos, cadastro, login,
-renovação e emissão de token também entram pelo API Gateway, que encaminha a
-requisição ao Identity pela rede interna.
-
-### Rede interna
-
-Devem permanecer internos:
-
-- Identity;
-- Catalog API;
-- Pricing API;
-- Orders API;
-- Payments API e Worker;
-- Entitlements API e Worker;
-- Notifications API e Worker;
-- RabbitMQ;
-- PostgreSQL.
-
-No Kubernetes, APIs internas devem usar `ClusterIP`. NetworkPolicies devem
-limitar quais workloads podem chamar cada serviço.
-
-## Autenticação versus autorização
-
-### Autenticação
-
-Responde quem está chamando:
+O sistema adota o padrão Trusted Subsystem: o BFF ou Gateway autentica o
+usuário na borda, cria uma nova requisição interna e se autentica como
+aplicação diante da API de destino.
 
 ```text
-Usuário: user-123
-Aplicação: web-bff
-Serviço: orders-service
-Worker: payments-worker
+Cliente
+   │ token user
+   ▼
+Gateway/BFF
+   │ valida usuário e autorização de entrada
+   │ extrai userId do sub
+   │ token service + userId no contrato
+   ▼
+API interna
+   │ valida aplicação, audience, scope e client_id
+   │ aplica regras do próprio domínio
+   ▼
+Outra API
+   │ token service + dados necessários
+   ▼
+Resposta ao cliente
 ```
 
-### Autorização técnica
+As APIs internas não recebem nem validam o token original do usuário. Elas
+validam o token de serviço e tratam o `userId` como uma declaração da aplicação
+autenticada.
 
-Responde quais operações o chamador pode solicitar:
+## Tipos de token
 
-```text
-web-bff pode criar pedidos?
-orders-service pode solicitar uma cotação?
-orders-service pode iniciar um pagamento?
-payments-worker pode publicar o resultado do pagamento?
-```
+### Token `user`
 
-### Autorização de negócio
-
-Responde se a operação faz sentido para o recurso específico:
-
-```text
-O pedido pertence ao usuário?
-O jogo está disponível?
-O valor da cotação ainda é válido?
-O pagamento já foi processado?
-O usuário já possui o entitlement?
-```
-
-BFF e Gateway podem aplicar autorização inicial. Eles não substituem as regras
-de negócio das APIs internas.
-
-## Identidades técnicas
-
-Cada aplicação é registrada no Identity como um cliente confidencial.
-
-| Aplicação | `client_id` sugerido |
-|---|---|
-| Web BFF | `web-bff` |
-| API Gateway | `public-api-gateway` |
-| Catalog | `catalog-service` |
-| Pricing | `pricing-service` |
-| Orders | `orders-service` |
-| Payments API | `payments-service` |
-| Payments Worker | `payments-worker` |
-| Entitlements API | `entitlements-service` |
-| Entitlements Worker | `entitlements-worker` |
-| Notifications Worker | `notifications-worker` |
-
-O `client_id` identifica o chamador, não a API de destino.
-
-Exemplo:
-
-```text
-Orders chama Payments
-
-client_id = orders-service
-audience  = payments-api
-scope     = payments.process
-```
-
-## Responsabilidades do Identity
-
-O Identity será a única autoridade emissora de tokens.
-
-Responsabilidades:
-
-- cadastrar e autenticar usuários;
-- manter credenciais e sessões;
-- emitir e renovar tokens de usuário;
-- registrar clientes técnicos;
-- validar `client_id` e `client_secret`;
-- emitir tokens por Client Credentials;
-- controlar audiences e scopes permitidos por cliente;
-- assinar tokens com chave privada;
-- publicar a chave pública ou JWKS;
-- revogar credenciais técnicas comprometidas;
-- auditar emissão e falhas de autenticação.
-
-O Identity não deve:
-
-- decidir se um pedido pode mudar de estado;
-- decidir se um pagamento pode ser processado;
-- consultar bancos de outros serviços;
-- criar entitlements;
-- concentrar regras de negócio dos microsserviços.
-
-## Dados do Identity
-
-Tabelas sugeridas:
-
-```text
-users
-roles
-user_roles
-refresh_tokens
-service_clients
-service_client_secrets
-service_client_scopes
-service_client_audiences
-signing_keys
-outbox_messages
-```
-
-### Service client
-
-```text
-Id
-ClientId
-DisplayName
-Status
-CreatedAtUtc
-UpdatedAtUtc
-```
-
-### Service client secret
-
-```text
-Id
-ServiceClientId
-SecretHash
-CreatedAtUtc
-ExpiresAtUtc
-RevokedAtUtc
-```
-
-O secret deve ser armazenado como hash. O valor original só é apresentado na
-criação ou rotação.
-
-## Tipos de credencial
-
-### Sessão do BFF
-
-O navegador recebe apenas um cookie de sessão:
-
-```text
-HttpOnly
-Secure
-SameSite
-```
-
-O BFF mantém os tokens do usuário no servidor. O navegador não armazena access
-token em `localStorage`.
-
-### Token externo
-
-Clientes externos apresentam um access token ao API Gateway:
-
-```http
-Authorization: Bearer <token-externo>
-```
-
-O Gateway valida assinatura, emissor, audience, expiração e permissões.
-
-### Token técnico
-
-É usado entre aplicações internas. Não precisa representar um usuário.
-
-Exemplo:
+Representa o usuário na borda.
 
 ```json
 {
   "iss": "fiap-cloud-games-identity",
-  "sub": "orders-service",
-  "client_id": "orders-service",
-  "aud": "payments-api",
-  "scope": [
-    "payments.process"
-  ],
-  "jti": "966610d6-b290-4e68-a867-f343203c9569",
-  "iat": 1789938000,
-  "exp": 1789938300
+  "aud": "web-bff",
+  "sub": "47de4c37-34ab-4084-a293-e46229c34aad",
+  "client_id": "web-bff",
+  "scope": "store.access",
+  "role": "customer",
+  "token_use": "user",
+  "exp": 1790031600
 }
 ```
 
-Esse token não contém nome, e-mail ou papel do usuário.
+Regras:
 
-### Token delegado
+- `sub` é o identificador do usuário;
+- `client_id` identifica a aplicação da borda;
+- a audience é o BFF ou Gateway;
+- não é aceito por APIs internas;
+- somente BFF ou Gateway usa `ICallerContext.UserId`.
 
-É uma evolução para operações em que a API interna precisa verificar
-criptograficamente a identidade do usuário e do intermediário.
+### Token `service`
+
+Representa uma aplicação interna.
 
 ```json
 {
-  "sub": "user-123",
-  "act": {
-    "sub": "web-bff"
-  },
+  "iss": "fiap-cloud-games-identity",
   "aud": "orders-api",
-  "scope": [
-    "orders.create"
-  ]
+  "sub": "web-bff",
+  "client_id": "web-bff",
+  "scope": "orders.create",
+  "token_use": "service",
+  "exp": 1790031300
 }
 ```
 
-Na primeira versão será usado o padrão Trusted Subsystem: o BFF/Gateway envia o
-`UserId` no comando interno e a API confia nele após autenticar o chamador.
+Regras:
 
-## Chaves de assinatura
+- `sub` e `client_id` representam a mesma aplicação;
+- a audience identifica somente a API de destino;
+- os scopes limitam as operações técnicas;
+- não contém identidade do usuário;
+- `ICallerContext.UserId` é sempre `null`.
 
-Deve ser usada assinatura assimétrica:
+## Responsabilidades
 
-```text
-Identity
-  -> guarda chave privada
-  -> assina tokens
+### Identity
 
-APIs internas
-  -> recebem chave pública
-  -> validam tokens
-  -> não conseguem emitir tokens válidos
-```
+- autenticar usuários;
+- emitir e renovar tokens `user`;
+- registrar aplicações confidenciais;
+- validar `client_id` e `client_secret`;
+- emitir tokens `service` por Client Credentials;
+- controlar audiences e scopes permitidos;
+- assinar tokens com chave assimétrica;
+- publicar discovery e JWKS;
+- revogar e rotacionar credenciais;
+- auditar emissões e falhas.
 
-A chave privada fica em Secret ou cofre. A chave pública pode ser entregue por
-ConfigMap ou publicada pelo Identity em JWKS.
+O Identity não contém regras de Orders, Payments, Catalog ou Entitlements.
 
-## Fluxo 1: login pelo BFF
+### BFF e API Gateway
+
+- receber login somente pela borda pública;
+- validar tokens `user`;
+- obter o usuário exclusivamente do `sub` validado;
+- ignorar ou sobrescrever `userId` informado pelo cliente;
+- aplicar autorização de rota e proteção contra abuso;
+- criar contratos internos com o `userId` correto;
+- obter e armazenar em cache tokens `service`;
+- nunca retornar tokens internos ao cliente.
+
+### APIs internas
+
+- aceitar somente `token_use=service`;
+- validar assinatura, issuer, audience e expiração localmente;
+- validar scopes e `client_id` permitidos;
+- usar `userId` do contrato somente de chamadores autorizados;
+- aplicar regras, invariantes e propriedade dos recursos do próprio domínio;
+- nunca consultar o Identity para validar cada requisição.
+
+### Workers
+
+- autenticar no broker com credenciais do broker quando mensageria existir;
+- não transportar JWT em mensagens;
+- solicitar token `service` somente quando precisarem chamar uma API HTTP;
+- não enviar `userId` quando não existir usuário associado ao processo.
+
+## Fluxo de login
 
 ```mermaid
 sequenceDiagram
     actor User as Usuário
-    participant Browser as Navegador
-    participant BFF as Web BFF
+    participant Client as Cliente
+    participant Edge as Gateway/BFF
     participant Identity as Identity
 
-    User->>Browser: Inicia login
-    Browser->>BFF: Solicita autenticação
-    BFF->>Identity: Autentica credenciais/OIDC
-    Identity-->>BFF: Access token e refresh token
-    BFF->>BFF: Armazena tokens no servidor
-    BFF-->>Browser: Cookie HttpOnly de sessão
+    User->>Client: Inicia login
+    Client->>Edge: Credenciais ou fluxo OIDC
+    Edge->>Identity: Solicitação interna de autenticação
+    Identity->>Identity: Valida usuário e credenciais
+    Identity-->>Edge: Token user e renovação aplicável
+    Edge-->>Client: Access token externo ou cookie HttpOnly
 ```
 
-Depois do login, o navegador envia apenas o cookie ao BFF.
+O Identity não é acessado diretamente por clientes externos. Em um BFF web,
+o navegador recebe preferencialmente um cookie `HttpOnly`, `Secure` e
+`SameSite`; os tokens permanecem no servidor.
 
-## Fluxo 2: cliente externo pelo Gateway
+## Fluxo de criação de pedido
 
-```mermaid
-sequenceDiagram
-    participant Client as Cliente externo
-    participant Gateway as API Gateway
-    participant Identity as Identity
-    participant Orders as Orders API
-
-    Client->>Gateway: POST /oauth/token
-    Gateway->>Gateway: Aplica TLS, rate limit e proteção da rota
-    Gateway->>Identity: Encaminha solicitação de autenticação
-    Identity-->>Gateway: Access token externo
-    Gateway-->>Client: Access token externo
-    Client->>Gateway: Requisição com Bearer token
-    Gateway->>Gateway: Valida usuário/cliente e rota
-    Gateway->>Identity: Solicita token técnico, se necessário
-    Identity-->>Gateway: Token para orders-api
-    Gateway->>Orders: Token técnico e comando interno
-```
-
-O endereço do Identity é conhecido pelo Gateway e pelos serviços internos, mas
-não é publicado para a internet. O cliente externo conhece apenas o endereço do
-Gateway, por exemplo:
-
-```text
-POST https://api.fiapcloudgames.com/oauth/token
-POST https://api.fiapcloudgames.com/users
-POST https://api.fiapcloudgames.com/orders
-```
-
-O Gateway pode rotear internamente:
-
-```text
-/oauth/* -> identity-api
-/users/* -> identity-api
-/orders/* -> orders-api ou adaptação interna do Gateway
-```
-
-As rotas de login e emissão de token não exigem um token prévio, mas devem ter
-TLS, rate limiting, proteção contra abuso, validação de payload e auditoria.
-
-## Fluxo 3: BFF cria um pedido
-
-O contrato público não aceita `UserId`.
+### Contrato público
 
 ```http
 POST /orders
-Cookie: session=<cookie>
+Authorization: Bearer <token-user>
 Content-Type: application/json
 
 {
@@ -416,25 +185,25 @@ Content-Type: application/json
 }
 ```
 
-O BFF obtém o usuário pela sessão:
+O cliente não escolhe seu `userId`.
 
-```csharp
-var userId = session.GetRequiredUserId();
-```
-
-O BFF solicita ao Identity um token técnico:
+### Processamento na borda
 
 ```text
-client_id = web-bff
-audience  = orders-api
-scope     = orders.create
+1. Validar token_use=user.
+2. Validar issuer, audience, assinatura e expiração.
+3. Extrair userId do sub.
+4. Validar acesso à rota.
+5. Obter token service para orders-api no cache.
+6. Em cache miss, solicitar Client Credentials ao Identity.
+7. Criar uma nova requisição interna.
 ```
 
-Depois chama o endpoint interno:
+### Contrato interno
 
 ```http
 POST /internal/orders
-Authorization: Bearer <token-tecnico-do-bff>
+Authorization: Bearer <token-service-do-bff>
 Content-Type: application/json
 
 {
@@ -443,87 +212,32 @@ Content-Type: application/json
 }
 ```
 
-Orders confia no `UserId` porque confirmou que o chamador é o `web-bff` e que
-ele possui o scope `orders.create`.
-
-## Contratos público e interno
-
-Não reutilize o mesmo DTO nos dois lados.
-
-### Contrato público do BFF
-
-```csharp
-public sealed record CreateOrderRequest(
-    Guid GameId);
-```
-
-### Contrato interno do Orders
-
-```csharp
-public sealed record CreateInternalOrderRequest(
-    Guid UserId,
-    Guid GameId);
-```
-
-O BFF ignora qualquer tentativa do navegador de informar outro usuário.
-
-```csharp
-var internalRequest = new CreateInternalOrderRequest(
-    UserId: session.GetRequiredUserId(),
-    GameId: request.GameId);
-```
-
-## Fluxo 4: Orders chama Pricing
-
-Orders precisa de uma cotação síncrona para criar o snapshot do pedido.
-
-```text
-client_id = orders-service
-audience  = pricing-api
-scope     = pricing.quote
-```
-
-Requisição:
-
-```http
-POST /internal/quotes
-Authorization: Bearer <token-tecnico-orders>
-Content-Type: application/json
-
-{
-  "gameId": "80fdc742-e7c1-4564-a269-8d52784bec44",
-  "region": "BR",
-  "currency": "BRL"
-}
-```
-
-Pricing não precisa receber o JWT original do usuário. Se existir preço
-personalizado, o comando pode conter somente os atributos comerciais
-necessários e permitidos.
-
-## Fluxo 5: Orders inicia o pagamento
-
-O fluxo preferencial é assíncrono:
-
-```mermaid
-sequenceDiagram
-    participant Orders as Orders API
-    participant Rabbit as RabbitMQ
-    participant Payments as Payments Worker
-
-    Orders->>Orders: Salva pedido PendingPayment
-    Orders->>Rabbit: OrderPlacedEvent
-    Rabbit->>Payments: Entrega evento
-    Payments->>Payments: Processa de forma idempotente
-    Payments->>Rabbit: PaymentProcessedEvent
-```
-
-O evento contém dados de negócio e auditoria, não o JWT do usuário:
+O token usado nessa chamada contém:
 
 ```json
 {
-  "eventId": "9d9ef2c2-737d-4898-8cfa-60d566a12f98",
-  "correlationId": "8bdce683-5144-4d93-8e43-8908372ec822",
+  "aud": "orders-api",
+  "sub": "web-bff",
+  "client_id": "web-bff",
+  "scope": "orders.create",
+  "token_use": "service"
+}
+```
+
+Orders aceita o `userId` somente se o token for válido, `web-bff` estiver na
+lista de clientes permitidos e o scope contiver `orders.create`.
+
+## Fluxo de Orders para Payments
+
+Orders já aplicou as regras de criação do pedido e chama Payments com sua
+própria identidade técnica.
+
+```http
+POST /internal/payments
+Authorization: Bearer <token-service-orders>
+Content-Type: application/json
+
+{
   "orderId": "585e4649-a9bb-4635-ab61-1424983d19d4",
   "userId": "47de4c37-34ab-4084-a293-e46229c34aad",
   "amount": 79.90,
@@ -531,62 +245,92 @@ O evento contém dados de negócio e auditoria, não o JWT do usuário:
 }
 ```
 
-O `UserId` é contexto de negócio/auditoria. A autenticação do Worker ocorre por
-credenciais e permissões do RabbitMQ.
+Token esperado:
 
-Se for necessária chamada HTTP síncrona:
-
-```text
-client_id = orders-service
-audience  = payments-api
-scope     = payments.process
+```json
+{
+  "aud": "payments-api",
+  "sub": "orders-api",
+  "client_id": "orders-api",
+  "scope": "payments.create",
+  "token_use": "service"
+}
 ```
 
-Payments não deve aceitar `payments.process` diretamente de `web-bff` ou
-`public-api-gateway`.
+Payments autentica Orders, usa `userId` como dado do pagamento e mantém suas
+próprias garantias de idempotência, valor e estado.
 
-## Fluxo 6: consulta da Library
+## Consulta da biblioteca
 
-O navegador solicita a própria biblioteca:
+Contrato público:
 
 ```http
 GET /library
-Cookie: session=<cookie>
+Authorization: Bearer <token-user>
 ```
 
-O BFF obtém o `UserId` da sessão e chama Entitlements:
+Contrato interno:
 
 ```http
 GET /internal/users/47de4c37-34ab-4084-a293-e46229c34aad/library
-Authorization: Bearer <token-tecnico-do-bff>
+Authorization: Bearer <token-service-do-bff>
 ```
 
-Token esperado:
+O identificador fica na rota porque identifica o recurso consultado. O BFF o
+obtém do `sub`; o cliente não escolhe livremente o valor.
+
+## Convenções para `userId`
+
+Use rota quando o usuário identificar o recurso:
 
 ```text
-client_id = web-bff
-audience  = entitlements-api
-scope     = entitlements.read
+GET /internal/users/{userId}/library
+GET /internal/users/{userId}/orders
 ```
 
-O usuário nunca escolhe livremente o `UserId` enviado nessa chamada.
+Use body quando o usuário participar de um comando:
 
-## Client Credentials
+```json
+{
+  "userId": "47de4c37-34ab-4084-a293-e46229c34aad",
+  "gameId": "80fdc742-e7c1-4564-a269-8d52784bec44"
+}
+```
 
-### Solicitação
+Use query string somente para filtros:
+
+```http
+GET /internal/orders?userId=47de4c37-34ab-4084-a293-e46229c34aad
+```
+
+Para operações administrativas, diferencie executor e alvo:
+
+```json
+{
+  "requestedByUserId": "admin-123",
+  "targetUserId": "user-456"
+}
+```
+
+O Building Blocks não lê body, rota ou query. Esses valores pertencem ao
+contrato e ao domínio de cada serviço.
+
+## Client Credentials e cache
+
+Solicitação:
 
 ```http
 POST /connect/token
 Content-Type: application/x-www-form-urlencoded
 
 grant_type=client_credentials
-&client_id=orders-service
+&client_id=orders-api
 &client_secret=<secret>
 &audience=payments-api
-&scope=payments.process
+&scope=payments.create
 ```
 
-### Resposta
+Resposta:
 
 ```json
 {
@@ -596,427 +340,144 @@ grant_type=client_credentials
 }
 ```
 
-O token técnico deve ser curto e armazenado em cache pelo cliente até próximo
-da expiração. Não solicite um novo token para cada chamada.
+O chamador guarda o token em memória pela combinação de audience e scopes e
+o renova antes da expiração. Requisições simultâneas compartilham a mesma
+renovação. Não é feita uma chamada ao Identity para cada requisição.
 
-## Validação em uma API ASP.NET Core
+As APIs validam JWT localmente com a chave pública em cache. O Identity é
+consultado para emissão ou renovação, não para validação online.
 
-Exemplo do Payments:
+## Configuração do Building Blocks
 
-```csharp
-builder.Services
-    .AddAuthentication(
-        JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.MapInboundClaims = false;
+API interna:
 
-        options.TokenValidationParameters =
-            new TokenValidationParameters
-            {
-                ValidateIssuer = true,
-                ValidIssuer = "fiap-cloud-games-identity",
-
-                ValidateAudience = true,
-                ValidAudience = "payments-api",
-
-                ValidateLifetime = true,
-                ValidateIssuerSigningKey = true,
-                IssuerSigningKey = publicKey,
-
-                ClockSkew = TimeSpan.FromSeconds(30)
-            };
-    });
+```json
+{
+  "Authentication": {
+    "Authority": "https://identity.internal",
+    "Issuer": "fiap-cloud-games-identity",
+    "Audience": "orders-api",
+    "AllowedTokenUses": ["service"],
+    "RequireHttpsMetadata": true,
+    "ClockSkew": "00:00:30"
+  }
+}
 ```
 
-Policy:
+BFF ou Gateway:
+
+```json
+{
+  "Authentication": {
+    "Authority": "https://identity.internal",
+    "Issuer": "fiap-cloud-games-identity",
+    "Audience": "web-bff",
+    "AllowedTokenUses": ["user"],
+    "RequireHttpsMetadata": true,
+    "ClockSkew": "00:00:30"
+  }
+}
+```
+
+Policy interna:
 
 ```csharp
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy(
-        "ProcessPayments",
-        policy =>
-        {
-            policy.RequireAuthenticatedUser();
-            policy.RequireClaim(
-                "client_id",
-                "orders-service");
-            policy.RequireClaim(
-                "scope",
-                "payments.process");
-        });
+        "CreateOrders",
+        policy => policy
+            .RequireAuthenticatedUser()
+            .RequireServiceToken()
+            .RequireClients("web-bff", "public-api-gateway")
+            .RequireScopes("orders.create"));
 });
 ```
 
-Endpoint:
+Todos os endpoints são autenticados por padrão. As exceções precisam ser
+explícitas:
 
 ```csharp
-[Authorize(Policy = "ProcessPayments")]
-[HttpPost("/internal/payments")]
-public async Task<ActionResult<PaymentResponse>> Process(
-    [FromBody] ProcessPaymentRequest request,
-    [FromServices] ProcessPaymentService service,
-    CancellationToken cancellationToken)
-{
-    var result = await service.ExecuteAsync(
-        request,
-        cancellationToken);
-
-    return Ok(result);
-}
+app.MapPost("/auth/login", Login).AllowAnonymous();
+app.MapFiapHealthChecks().AllowAnonymous();
 ```
 
-## Obtenção de token por um serviço
+No Identity, discovery, JWKS e token endpoint também são públicos no nível do
+middleware, mas aplicam as validações próprias do protocolo.
 
-```csharp
-public sealed record TokenResponse(
-    [property: JsonPropertyName("access_token")]
-    string AccessToken,
+## Respostas de segurança
 
-    [property: JsonPropertyName("token_type")]
-    string TokenType,
+Use `401 Unauthorized` quando:
 
-    [property: JsonPropertyName("expires_in")]
-    int ExpiresIn);
-```
+- não existe token;
+- assinatura, issuer ou audience são inválidos;
+- o token expirou;
+- `token_use` é ausente ou não permitido;
+- as claims obrigatórias são inválidas.
 
-```csharp
-public sealed class ServiceTokenProvider(
-    HttpClient identityClient,
-    IConfiguration configuration)
-{
-    public async Task<string> GetTokenAsync(
-        string audience,
-        string scope,
-        CancellationToken cancellationToken)
-    {
-        var content = new FormUrlEncodedContent(
-            new Dictionary<string, string>
-            {
-                ["grant_type"] = "client_credentials",
-                ["client_id"] = configuration[
-                    "ServiceAuthentication:ClientId"]!,
-                ["client_secret"] = configuration[
-                    "ServiceAuthentication:ClientSecret"]!,
-                ["audience"] = audience,
-                ["scope"] = scope
-            });
+Use `403 Forbidden` quando:
 
-        using var response = await identityClient.PostAsync(
-            "connect/token",
-            content,
-            cancellationToken);
+- o token é válido;
+- o `client_id` não pode executar a operação;
+- falta um scope necessário.
 
-        response.EnsureSuccessStatusCode();
+## Regras para logs
 
-        var token = await response.Content
-            .ReadFromJsonAsync<TokenResponse>(
-                cancellationToken);
+Nunca registrar:
 
-        return token!.AccessToken;
-    }
-}
-```
-
-Na implementação real, envolva o provider com cache e renovação antecipada.
-
-## Catálogo de permissões inicial
-
-| Chamador | Destino | Audience | Scope |
-|---|---|---|---|
-| `web-bff` | Orders | `orders-api` | `orders.create`, `orders.read` |
-| `web-bff` | Catalog | `catalog-api` | `catalog.read` |
-| `web-bff` | Entitlements | `entitlements-api` | `entitlements.read` |
-| `public-api-gateway` | Orders | `orders-api` | `orders.create`, `orders.read` |
-| `orders-service` | Catalog | `catalog-api` | `catalog.read` |
-| `orders-service` | Pricing | `pricing-api` | `pricing.quote` |
-| `orders-service` | Payments | `payments-api` | `payments.process` |
-| `orders-service` | Entitlements | `entitlements-api` | `entitlements.grant` |
-| `support-bff` | Payments | `payments-api` | `payments.read`, `payments.refund` |
-
-O Identity deve rejeitar combinações não cadastradas de cliente, audience e
-scope.
-
-## Endpoints públicos e internos
-
-Convenção sugerida:
-
-```text
-/api/*       contratos externos
-/internal/*  contratos entre aplicações
-```
-
-Exemplos:
-
-```text
-POST /api/auth/login
-POST /api/users
-
-POST /internal/orders
-POST /internal/quotes
-POST /internal/payments
-GET  /internal/users/{userId}/library
-```
-
-Endpoints internos exigem token técnico e não devem ser publicados pelo
-Gateway, exceto quando houver decisão explícita.
-
-## Módulo compartilhado de autenticação
-
-As funcionalidades comuns de autenticação ficarão no namespace:
-
-```text
-FiapCloudGames.BuildingBlocks.Authentication
-```
-
-Esse namespace fará parte do pacote único
-`FiapCloudGames.BuildingBlocks`, conforme a decisão descrita em
-[Building blocks compartilhados entre microsserviços](shared-building-blocks.md).
-
-Responsabilidades permitidas:
-
-- configurar JWT Bearer;
-- validar issuer e chave pública;
-- extrair `client_id` e scopes;
-- registrar policies técnicas;
-- obter e armazenar em cache tokens técnicos;
-- padronizar respostas 401 e 403.
-
-Não deve conter:
-
-- entidade `User`;
-- `IdentityDbContext`;
-- hash de senha;
-- geração de token;
-- policies específicas de negócio;
-- autorização de pedidos, pagamentos ou entitlements.
-
-## Configuração
-
-### ConfigMap
-
-```text
-Authentication__Issuer=fiap-cloud-games-identity
-Authentication__Audience=payments-api
-Authentication__Authority=http://identity-api
-ServiceAuthentication__ClientId=payments-service
-```
-
-### Secret
-
-```text
-ServiceAuthentication__ClientSecret=<secret>
-Authentication__PrivateKey=<somente-no-identity>
-RabbitMq__Password=<secret>
-```
-
-A chave pública não é segredo. A chave privada nunca sai do Identity.
-
-## RabbitMQ
-
-Cada Worker possui usuário e permissões próprias no broker.
-
-```text
-orders-publisher
-payments-worker
-entitlements-worker
-notifications-worker
-```
-
-Exemplo de autorização:
-
-```text
-payments-worker
-  pode consumir: orders.order-placed.payments
-  pode publicar: payments.payment-processed
-  não pode consumir: identity.user-created.notifications
-  não pode publicar: entitlements.entitlement-granted
-```
-
-Mensagens carregam:
-
-- `EventId`;
-- `CorrelationId`;
-- `CausationId`;
-- identificadores de negócio;
-- `UserId` apenas quando necessário;
-- data e versão do evento.
-
-Mensagens não carregam:
-
-- JWT do usuário;
+- access token;
+- refresh token;
 - client secret;
 - senha;
 - chave privada;
 - dados completos de cartão.
 
-## Respostas de segurança
-
-### 401 Unauthorized
-
-Usar quando:
-
-- token está ausente;
-- assinatura é inválida;
-- token expirou;
-- issuer ou audience não são aceitos;
-- cliente foi revogado.
-
-### 403 Forbidden
-
-Usar quando:
-
-- token é válido;
-- chamador foi autenticado;
-- scope ou policy não permite a operação.
-
-### 404 Not Found
-
-Pode ser usado quando revelar a existência do recurso representaria risco. A
-decisão deve ser consistente em cada API.
-
-## Auditoria e logs
-
-Registrar em operações sensíveis:
+Registrar apenas metadados necessários:
 
 ```text
-TraceId
-CorrelationId
-ClientId
-UserId, quando aplicável
-Scope utilizado
-Audience
-OrderId, PaymentId ou EntitlementId
-Resultado
-Horário UTC
+client_id
+audience
+scopes
+userId quando necessário para auditoria
+correlationId
+resultado da autorização
 ```
 
-Não registrar:
-
-- access token completo;
-- refresh token;
-- client secret;
-- senha;
-- chave privada;
-- código de segurança de cartão.
-
-## Riscos do Trusted Subsystem
-
-Como Orders confia no `UserId` informado pelo BFF, um BFF comprometido pode
-tentar agir em nome de outro usuário.
-
-Mitigações da primeira versão:
-
-- BFF isolado e com secret exclusivo;
-- scopes mínimos;
-- APIs internas inacessíveis externamente;
-- TLS;
-- NetworkPolicies;
-- auditoria de `ClientId` e `UserId`;
-- rotação de secrets;
-- token técnico curto;
-- endpoints internos separados;
-- proibição de BFF chamar Payments diretamente.
-
-Evoluções:
-
-- OAuth Token Exchange;
-- token delegado com claims `sub` e `act`;
-- mTLS entre workloads;
-- workload identity;
-- secrets substituídos por certificados curtos;
-- policy engine para autorizações complexas.
-
-## Testes obrigatórios
+## Checklist de implementação
 
 ### Identity
 
-- rejeita client secret inválido;
-- rejeita cliente revogado;
-- rejeita audience não cadastrada;
-- rejeita scope não permitido;
-- emite token com expiração curta;
-- não inclui claims de usuário em token técnico;
-- aceita rotação de secret sem interromper o cliente;
-- assina com a chave privada esperada.
+- emitir `token_use=user` no login;
+- emitir `token_use=service` em Client Credentials;
+- garantir `sub == client_id` em tokens `service`;
+- usar uma audience por API;
+- validar audiences e scopes permitidos por cliente;
+- publicar discovery e JWKS;
+- nunca emitir token delegado.
+
+### BFF e Gateway
+
+- aceitar somente `token_use=user`;
+- extrair usuário somente do `sub` validado;
+- não aceitar `userId` externo como identidade;
+- criar contratos internos separados;
+- usar e armazenar em cache tokens `service`;
+- não expor token interno ao cliente.
 
 ### APIs internas
 
-- rejeitam requisição sem token;
-- rejeitam issuer incorreto;
-- rejeitam audience incorreta;
-- rejeitam token expirado;
-- rejeitam scope ausente;
-- rejeitam `client_id` não autorizado;
-- aceitam apenas combinações explicitamente permitidas;
-- não confiam em `UserId` vindo de cliente não autorizado.
+- aceitar somente `token_use=service`;
+- proteger endpoints por padrão;
+- usar `AllowAnonymous` somente de forma explícita;
+- restringir `client_id` e scopes por operação;
+- receber `userId` pelo contrato quando necessário;
+- manter regras de negócio no domínio responsável.
 
-### BFF/Gateway
+## Consequência arquitetural aceita
 
-- não aceitam `UserId` informado livremente pelo navegador;
-- usam o usuário da sessão/token validado;
-- não expõem o token técnico ao cliente;
-- não registram secrets em logs;
-- renovam tokens técnicos antes da expiração;
-- removem headers internos recebidos externamente.
-
-### RabbitMQ
-
-- Worker não consome fila sem permissão;
-- eventos duplicados não duplicam operações;
-- evento inválido é rejeitado ou enviado para dead-letter queue;
-- dados sensíveis não aparecem na mensagem.
-
-## Checklist para adicionar uma nova API
-
-1. Registrar um `client_id` exclusivo no Identity.
-2. Gerar um client secret e armazenar apenas seu hash no Identity.
-3. Guardar o valor do secret em Kubernetes Secret.
-4. Definir a audience da API.
-5. Definir os scopes de entrada e saída.
-6. Registrar quais clientes podem solicitar cada scope.
-7. Configurar JWT Bearer com a chave pública do Identity.
-8. Criar policies para os endpoints internos.
-9. Bloquear exposição externa dos endpoints `/internal`.
-10. Configurar logs sem tokens ou secrets.
-11. Criar testes de 401 e 403.
-12. Documentar as chamadas e permissões no README do serviço.
-
-## Ordem de implementação
-
-1. Migrar assinatura de HMAC para RSA.
-2. Criar registro de service clients no Identity.
-3. Implementar Client Credentials no Identity.
-4. Criar o módulo `Authentication` em `FiapCloudGames.BuildingBlocks`.
-5. Configurar autenticação técnica no Orders.
-6. Implementar BFF -> Orders com `UserId` no comando interno.
-7. Configurar Orders -> Pricing.
-8. Configurar RabbitMQ com usuário por Worker.
-9. Implementar Orders -> Payments por evento.
-10. Configurar Entitlements e Library.
-11. Adicionar Gateway quando necessário.
-12. Evoluir para token exchange ou workload identity se o risco justificar.
-
-## Decisão arquitetural
-
-O modelo inicial será:
-
-```text
-Usuário autenticado somente na borda.
-
-BFF e Gateway são Trusted Subsystems.
-
-Identity é o único emissor de tokens.
-
-APIs internas validam tokens técnicos.
-
-UserId é enviado no corpo ou rota apenas por aplicações autenticadas e
-autorizadas.
-
-Payments recebe comandos somente de Orders ou RabbitMQ.
-
-JWT do usuário não percorre toda a cadeia de microsserviços.
-
-Regras de negócio permanecem nos serviços responsáveis.
-```
+Um token `service` permite que uma aplicação autorizada declare diferentes
+usuários nos contratos internos. Esse risco é aceito pelo padrão Trusted
+Subsystem e exige credenciais exclusivas, tokens curtos, scopes mínimos, HTTPS,
+rede interna e auditoria. Se no futuro for necessária prova criptográfica por
+usuário entre serviços, a arquitetura poderá evoluir; isso não faz parte da
+Fase 2.

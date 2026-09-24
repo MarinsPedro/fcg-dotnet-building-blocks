@@ -7,6 +7,42 @@ namespace FiapCloudGames.BuildingBlocks.Authentication;
 /// </summary>
 public static class AuthorizationPolicyBuilderExtensions
 {
+    /// <summary>Exige um dos tipos de token informados.</summary>
+    public static AuthorizationPolicyBuilder RequireTokenUses(
+        this AuthorizationPolicyBuilder builder,
+        params string[] tokenUses)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(tokenUses);
+
+        var requiredTokenUses = tokenUses
+            .Where(tokenUse => !string.IsNullOrWhiteSpace(tokenUse))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (requiredTokenUses.Length == 0 ||
+            requiredTokenUses.Any(tokenUse => !FiapTokenUses.IsSupported(tokenUse)))
+        {
+            throw new ArgumentException(
+                "Informe pelo menos um token_use suportado.",
+                nameof(tokenUses));
+        }
+
+        return builder.RequireClaim(
+            FiapClaimTypes.TokenUse,
+            requiredTokenUses);
+    }
+
+    /// <summary>Exige um token de usuário.</summary>
+    public static AuthorizationPolicyBuilder RequireUserToken(
+        this AuthorizationPolicyBuilder builder) =>
+        builder.RequireTokenUses(FiapTokenUses.User);
+
+    /// <summary>Exige um token de aplicação.</summary>
+    public static AuthorizationPolicyBuilder RequireServiceToken(
+        this AuthorizationPolicyBuilder builder) =>
+        builder.RequireTokenUses(FiapTokenUses.Service);
+
     /// <summary>Exige todos os scopes informados.</summary>
     public static AuthorizationPolicyBuilder RequireScopes(
         this AuthorizationPolicyBuilder builder,

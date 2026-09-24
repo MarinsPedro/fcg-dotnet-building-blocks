@@ -1,7 +1,7 @@
 namespace FiapCloudGames.BuildingBlocks.Authentication;
 
 /// <summary>
-/// Fornece access tokens de aplicação para chamadas entre serviços.
+/// Fornece access tokens do tipo <c>service</c> para chamadas internas.
 /// </summary>
 public interface IServiceTokenProvider
 {

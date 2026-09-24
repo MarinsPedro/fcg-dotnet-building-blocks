@@ -7,7 +7,7 @@ namespace FiapCloudGames.BuildingBlocks.Tests.Authentication;
 public sealed class HttpCallerContextTests
 {
     [Fact]
-    public void Context_ShouldReadTechnicalCallerAndSpaceSeparatedScopes()
+    public void Context_ShouldReadUserCallerAndSpaceSeparatedScopes()
     {
         var userId = Guid.NewGuid();
         var context = new DefaultHttpContext
@@ -18,6 +18,7 @@ public sealed class HttpCallerContextTests
                     new Claim(FiapClaimTypes.ClientId, "orders-service"),
                     new Claim(FiapClaimTypes.Scope, "orders.read orders.write"),
                     new Claim(FiapClaimTypes.Scope, "catalog.read"),
+                    new Claim(FiapClaimTypes.TokenUse, FiapTokenUses.User),
                     new Claim(FiapClaimTypes.Subject, userId.ToString())
                 ],
                 "test"))
@@ -30,6 +31,9 @@ public sealed class HttpCallerContextTests
         var caller = new HttpCallerContext(accessor);
 
         Assert.True(caller.IsAuthenticated);
+        Assert.True(caller.IsUser);
+        Assert.False(caller.IsService);
+        Assert.Equal(FiapTokenUses.User, caller.TokenUse);
         Assert.Equal("orders-service", caller.ClientId);
         Assert.Equal(userId, caller.UserId);
         Assert.Equal(
@@ -40,11 +44,16 @@ public sealed class HttpCallerContextTests
     [Fact]
     public void Context_ShouldNotTreatServiceSubjectAsUserId()
     {
+        var serviceId = Guid.NewGuid().ToString();
         var context = new DefaultHttpContext
         {
             User = new ClaimsPrincipal(
                 new ClaimsIdentity(
-                [new Claim(FiapClaimTypes.Subject, "orders-service")],
+                [
+                    new Claim(FiapClaimTypes.Subject, serviceId),
+                    new Claim(FiapClaimTypes.ClientId, serviceId),
+                    new Claim(FiapClaimTypes.TokenUse, FiapTokenUses.Service)
+                ],
                 "test"))
         };
 
@@ -52,5 +61,7 @@ public sealed class HttpCallerContextTests
             new HttpContextAccessor { HttpContext = context });
 
         Assert.Null(caller.UserId);
+        Assert.False(caller.IsUser);
+        Assert.True(caller.IsService);
     }
 }

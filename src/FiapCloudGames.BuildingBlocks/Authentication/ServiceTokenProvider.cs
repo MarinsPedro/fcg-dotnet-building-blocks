@@ -98,7 +98,7 @@ internal sealed class ServiceTokenProvider(
         if (!response.IsSuccessStatusCode)
         {
             throw new HttpRequestException(
-                $"O Identity recusou a emissão do token técnico com status " +
+                $"O Identity recusou a emissão do token de serviço com status " +
                 $"{(int)response.StatusCode}.",
                 inner: null,
                 response.StatusCode);
