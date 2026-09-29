@@ -38,6 +38,9 @@ jobs:
       - name: Restore
         run: dotnet restore FiapCloudGames.BuildingBlocks.slnx --configfile NuGet.Config
 
+      - name: Format
+        run: dotnet format FiapCloudGames.BuildingBlocks.slnx --verify-no-changes --no-restore
+
       - name: Build
         run: dotnet build FiapCloudGames.BuildingBlocks.slnx -c Release --no-restore
 

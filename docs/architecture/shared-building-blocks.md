@@ -31,7 +31,7 @@ Cada API ou Worker instalará somente esse pacote:
 ```xml
 <PackageReference
     Include="FiapCloudGames.BuildingBlocks"
-    Version="0.1.0" />
+    Version="0.2.0" />
 ```
 
 O pacote poderá conter apenas comportamentos técnicos comuns. Entidades,
@@ -439,7 +439,7 @@ no seu `Directory.Packages.props`:
 <ItemGroup>
   <PackageVersion
       Include="FiapCloudGames.BuildingBlocks"
-      Version="0.1.0" />
+      Version="0.2.0" />
 </ItemGroup>
 ```
 

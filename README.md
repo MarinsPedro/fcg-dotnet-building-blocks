@@ -34,8 +34,27 @@ Consulte [Consumo do pacote privado](docs/package-consumption.md) para configura
 o GitHub Packages sem gravar tokens no repositório.
 
 ```xml
-<PackageReference Include="FiapCloudGames.BuildingBlocks" Version="0.1.0" />
+<PackageReference Include="FiapCloudGames.BuildingBlocks" Version="0.2.0" />
 ```
+
+## Arquitetura do pacote
+
+Building Blocks não é um bounded context e, por isso, não possui camadas
+`Domain`, `Application`, `Infrastructure` e `Presentation`. O equivalente à
+Clean Architecture neste pacote é o isolamento entre módulos técnicos:
+
+```text
+Authentication ──> Exceptions
+Web ──────────────> Exceptions + Observability
+Hosting            sem dependências internas
+Observability      sem dependências internas
+```
+
+Todos continuam no mesmo assembly e no mesmo NuGet. Testes de arquitetura
+fiscalizam a direção dessas dependências, a ausência de persistência e a
+correspondência entre pastas e namespaces.
+
+Consulte [Arquitetura do código](docs/architecture/code-architecture.md).
 
 ## Configuração da API
 
@@ -164,12 +183,14 @@ do endpoint. Em tokens `service`, `ICallerContext.UserId` é sempre `null`.
 dotnet restore --configfile NuGet.Config
 dotnet build --no-restore
 dotnet test --no-build --no-restore
+dotnet format FiapCloudGames.BuildingBlocks.slnx --verify-no-changes --no-restore
 dotnet pack src/FiapCloudGames.BuildingBlocks -c Release
 ```
 
 ## Documentação
 
 - [Decisão dos building blocks](docs/architecture/shared-building-blocks.md)
+- [Arquitetura do código](docs/architecture/code-architecture.md)
 - [Roteiro de migração](docs/architecture/migration-roadmap.md)
 - [Arquitetura-alvo](docs/architecture/target-microservices.md)
 - [Autenticação-alvo](docs/architecture/target-authentication.md)

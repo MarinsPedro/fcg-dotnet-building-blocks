@@ -36,7 +36,7 @@ No `Directory.Packages.props`:
 <ItemGroup>
   <PackageVersion
       Include="FiapCloudGames.BuildingBlocks"
-      Version="0.1.0" />
+      Version="0.2.0" />
 </ItemGroup>
 ```
 

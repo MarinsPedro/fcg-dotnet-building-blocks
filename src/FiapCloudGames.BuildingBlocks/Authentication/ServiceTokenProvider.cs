@@ -107,15 +107,15 @@ internal sealed class ServiceTokenProvider(
         var payload = await response.Content.ReadFromJsonAsync<TokenResponse>(
             cancellationToken);
 
-        if (payload is null ||
-            string.IsNullOrWhiteSpace(payload.AccessToken) ||
-            payload.ExpiresIn <= 0)
+        var accessToken = payload?.ResolveAccessToken();
+        var expiresIn = payload?.ResolveExpiresIn() ?? 0;
+        if (string.IsNullOrWhiteSpace(accessToken) || expiresIn <= 0)
         {
             throw new InvalidOperationException(
                 "O Identity retornou uma resposta de token inválida.");
         }
 
-        var usableLifetime = TimeSpan.FromSeconds(payload.ExpiresIn) -
+        var usableLifetime = TimeSpan.FromSeconds(expiresIn) -
             options.RefreshBeforeExpiration;
         if (usableLifetime <= TimeSpan.Zero)
         {
@@ -123,7 +123,7 @@ internal sealed class ServiceTokenProvider(
         }
 
         return new CachedToken(
-            payload.AccessToken,
+            accessToken,
             timeProvider.GetUtcNow().Add(usableLifetime));
     }
 
@@ -141,9 +141,24 @@ internal sealed class ServiceTokenProvider(
         string AccessToken,
         DateTimeOffset ValidUntilUtc);
 
-    private sealed record TokenResponse(
-        [property: JsonPropertyName("access_token")]
-        string AccessToken,
-        [property: JsonPropertyName("expires_in")]
-        int ExpiresIn);
+    private sealed class TokenResponse
+    {
+        [JsonPropertyName("access_token")]
+        public string? OAuthAccessToken { get; init; }
+
+        [JsonPropertyName("expires_in")]
+        public int? OAuthExpiresIn { get; init; }
+
+        [JsonPropertyName("accessToken")]
+        public string? DotNetAccessToken { get; init; }
+
+        [JsonPropertyName("expiresIn")]
+        public int? DotNetExpiresIn { get; init; }
+
+        public string? ResolveAccessToken() =>
+            OAuthAccessToken ?? DotNetAccessToken;
+
+        public int ResolveExpiresIn() =>
+            OAuthExpiresIn ?? DotNetExpiresIn ?? 0;
+    }
 }

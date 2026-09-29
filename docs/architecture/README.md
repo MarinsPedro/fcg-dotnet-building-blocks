@@ -13,4 +13,5 @@ plataforma. Essa classificação deve ser mantida em todos os documentos.
 - [Arquitetura-alvo de microsserviços](target-microservices.md)
 - [Autenticação e autorização da arquitetura-alvo](target-authentication.md)
 - [Building blocks compartilhados entre microsserviços](shared-building-blocks.md)
+- [Arquitetura do código do pacote](code-architecture.md)
 - [Roteiro de migração para microsserviços](migration-roadmap.md)

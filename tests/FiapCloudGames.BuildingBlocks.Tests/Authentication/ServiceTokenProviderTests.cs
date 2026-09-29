@@ -52,6 +52,22 @@ public sealed class ServiceTokenProviderTests
         Assert.Equal(2, handler.RequestCount);
     }
 
+    [Fact]
+    public async Task Provider_ShouldAcceptCurrentIdentityCamelCaseContract()
+    {
+        var handler = new TokenEndpointHandler(useCamelCase: true);
+        var clock = new MutableTimeProvider(
+            new DateTimeOffset(2026, 9, 20, 12, 0, 0, TimeSpan.Zero));
+        var provider = CreateProvider(handler, clock);
+
+        var token = await provider.GetAccessTokenAsync(
+            "catalog-api",
+            "catalog.read");
+
+        Assert.Equal("technical-token-1", token);
+        Assert.Equal(1, handler.RequestCount);
+    }
+
     private static ServiceTokenProvider CreateProvider(
         HttpMessageHandler handler,
         TimeProvider clock)
@@ -70,7 +86,8 @@ public sealed class ServiceTokenProviderTests
             clock);
     }
 
-    private sealed class TokenEndpointHandler : HttpMessageHandler
+    private sealed class TokenEndpointHandler(
+        bool useCamelCase = false) : HttpMessageHandler
     {
         public int RequestCount { get; private set; }
 
@@ -87,12 +104,19 @@ public sealed class ServiceTokenProviderTests
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
-                    $$"""
-                    {
-                      "access_token": "technical-token-{{RequestCount}}",
-                      "expires_in": 120
-                    }
-                    """,
+                    useCamelCase
+                        ? $$"""
+                          {
+                            "accessToken": "technical-token-{{RequestCount}}",
+                            "expiresIn": 120
+                          }
+                          """
+                        : $$"""
+                          {
+                            "access_token": "technical-token-{{RequestCount}}",
+                            "expires_in": 120
+                          }
+                          """,
                     Encoding.UTF8,
                     "application/json")
             };
