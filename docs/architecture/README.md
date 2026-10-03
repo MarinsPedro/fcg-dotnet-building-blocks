@@ -1,17 +1,16 @@
-# FIAP Cloud Games - Fase 2
+# Arquitetura do Building Blocks
 
-Esta pasta concentra exclusivamente a documentação nova da evolução para
-microsserviços. Os documentos da arquitetura atual permanecem inalterados.
-
-O escopo possui sete módulos de domínio: Identity, Catalog, Promotions,
-Orders, Payments, Library e Notifications. Building Blocks é uma biblioteca;
-BFF e API Gateway são componentes de borda; RabbitMQ e Kubernetes pertencem à
-plataforma. Essa classificação deve ser mantida em todos os documentos.
+Esta pasta documenta somente a arquitetura interna do pacote
+`FiapCloudGames.BuildingBlocks`. A arquitetura dos microserviços, autenticação
+da plataforma, infraestrutura e roteiro de migração pertencem ao repositório
+[fcg-microservices-docs](https://github.com/MarinsPedro/fcg-microservices-docs).
 
 ## Documentos
 
-- [Arquitetura-alvo de microsserviços](target-microservices.md)
-- [Autenticação e autorização da arquitetura-alvo](target-authentication.md)
-- [Building blocks compartilhados entre microsserviços](shared-building-blocks.md)
 - [Arquitetura do código do pacote](code-architecture.md)
-- [Roteiro de migração para microsserviços](migration-roadmap.md)
+- [Consumo do pacote privado](../package-consumption.md)
+
+## Decisões relacionadas
+
+- [ADR-005 — Building Blocks compartilhado](https://github.com/MarinsPedro/fcg-microservices-docs/blob/main/decisions/ADR-005-building-blocks-package.md)
+- [Autenticação e autorização da plataforma](https://github.com/MarinsPedro/fcg-microservices-docs/blob/main/architecture/authentication-authorization.md)

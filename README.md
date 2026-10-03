@@ -22,11 +22,10 @@ de negócio.
 - health checks;
 - configuração de trace e span nos logs.
 
-RabbitMQ e Kubernetes fazem parte da arquitetura-alvo. A versão atual do
-pacote já cobre HTTP, autenticação e observabilidade básica; o namespace
-`Messaging` para RabbitMQ ainda será implementado no mesmo NuGet. Manifests de
-Kubernetes não pertencem ao pacote: ficam nos repositórios das aplicações e no
-repositório técnico `fcg-platform`.
+A versão atual cobre HTTP, autenticação e observabilidade básica. Recursos
+adicionais só entram quando forem compartilháveis e não carregarem regras de
+domínio. As decisões de RabbitMQ, Kubernetes e topologia da plataforma ficam na
+[documentação central](https://github.com/MarinsPedro/fcg-microservices-docs).
 
 ## Instalação
 
@@ -189,9 +188,7 @@ dotnet pack src/FiapCloudGames.BuildingBlocks -c Release
 
 ## Documentação
 
-- [Decisão dos building blocks](docs/architecture/shared-building-blocks.md)
 - [Arquitetura do código](docs/architecture/code-architecture.md)
-- [Roteiro de migração](docs/architecture/migration-roadmap.md)
-- [Arquitetura-alvo](docs/architecture/target-microservices.md)
-- [Autenticação-alvo](docs/architecture/target-authentication.md)
 - [Consumo do pacote](docs/package-consumption.md)
+- [Documentação da plataforma](https://github.com/MarinsPedro/fcg-microservices-docs)
+- [Decisão arquitetural sobre o pacote](https://github.com/MarinsPedro/fcg-microservices-docs/blob/main/decisions/ADR-005-building-blocks-package.md)
