@@ -24,8 +24,7 @@ de negócio.
 
 A versão atual cobre HTTP, autenticação e observabilidade básica. Recursos
 adicionais só entram quando forem compartilháveis e não carregarem regras de
-domínio. As decisões de RabbitMQ, Kubernetes e topologia da plataforma ficam na
-[documentação central](https://github.com/MarinsPedro/fcg-microservices-docs).
+domínio.
 
 ## Instalação
 
@@ -190,5 +189,3 @@ dotnet pack src/FiapCloudGames.BuildingBlocks -c Release
 
 - [Arquitetura do código](docs/architecture/code-architecture.md)
 - [Consumo do pacote](docs/package-consumption.md)
-- [Documentação da plataforma](https://github.com/MarinsPedro/fcg-microservices-docs)
-- [Decisão arquitetural sobre o pacote](https://github.com/MarinsPedro/fcg-microservices-docs/blob/main/decisions/ADR-005-building-blocks-package.md)
