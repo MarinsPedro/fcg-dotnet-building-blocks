@@ -7,7 +7,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>FiapCloudGames.BuildingBlocks</PackageId>
     <Description>Componentes técnicos compartilhados entre os serviços do FIAP Cloud Games.</Description>
-    <VersionPrefix>0.2.1</VersionPrefix>
+    <VersionPrefix>0.2.2</VersionPrefix>
     <Authors>FIAP Cloud Games</Authors>
     <RepositoryType>git</RepositoryType>
     <RepositoryUrl>https://github.com/MarinsPedro/fcg-dotnet-building-blocks</RepositoryUrl>
