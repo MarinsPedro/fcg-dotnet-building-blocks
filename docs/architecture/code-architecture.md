@@ -83,6 +83,15 @@ Essas regras são verificadas por
 | EF Core, repository ou migration | Infrastructure do serviço proprietário |
 | manifests e recursos Kubernetes | repositório da aplicação ou `fcg-platform` |
 
+O módulo `Authentication` pode consumir padrões OAuth/OIDC, como Discovery,
+JWKS e Client Credentials. Ele não conhece URLs fixas do Identity, audiences,
+scopes ou clients específicos. Esses valores chegam por configuração do serviço
+consumidor.
+
+O módulo `Hosting` define somente as convenções dos endpoints `/health`,
+`/health/live` e `/health/ready`. Os health checks e tags de cada dependência
+continuam sendo registrados pelo serviço proprietário.
+
 ## API pública e encapsulamento
 
 São públicos somente os tipos que os serviços consumidores precisam usar:

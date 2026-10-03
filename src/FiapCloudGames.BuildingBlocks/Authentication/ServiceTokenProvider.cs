@@ -15,6 +15,8 @@ internal sealed class ServiceTokenProvider(
 
     private readonly ConcurrentDictionary<string, CachedToken> cache = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> locks = new();
+    private readonly SemaphoreSlim discoveryLock = new(1, 1);
+    private CachedTokenEndpoint? cachedTokenEndpoint;
 
     public async ValueTask<string> GetAccessTokenAsync(
         string audience,
@@ -42,7 +44,13 @@ internal sealed class ServiceTokenProvider(
                 return token;
             }
 
+            var options = optionsMonitor.CurrentValue;
+            var tokenEndpoint = await ResolveTokenEndpointAsync(
+                options,
+                cancellationToken);
             var issued = await RequestTokenAsync(
+                options,
+                tokenEndpoint,
                 audience.Trim(),
                 normalizedScopes,
                 cancellationToken);
@@ -68,15 +76,96 @@ internal sealed class ServiceTokenProvider(
         return false;
     }
 
+    private async Task<Uri> ResolveTokenEndpointAsync(
+        ServiceTokenOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (options.TokenEndpoint is not null)
+        {
+            return options.TokenEndpoint;
+        }
+
+        var metadataAddress = ResolveMetadataAddress(options);
+        var cached = cachedTokenEndpoint;
+        if (cached is not null &&
+            cached.MetadataAddress == metadataAddress &&
+            cached.ValidUntilUtc > timeProvider.GetUtcNow())
+        {
+            return cached.TokenEndpoint;
+        }
+
+        await discoveryLock.WaitAsync(cancellationToken);
+        try
+        {
+            cached = cachedTokenEndpoint;
+            if (cached is not null &&
+                cached.MetadataAddress == metadataAddress &&
+                cached.ValidUntilUtc > timeProvider.GetUtcNow())
+            {
+                return cached.TokenEndpoint;
+            }
+
+            var discovered = await RequestDiscoveryDocumentAsync(
+                metadataAddress,
+                options.RequireHttps,
+                cancellationToken);
+            cachedTokenEndpoint = new CachedTokenEndpoint(
+                metadataAddress,
+                discovered,
+                timeProvider.GetUtcNow().Add(options.DiscoveryRefreshInterval));
+            return discovered;
+        }
+        finally
+        {
+            discoveryLock.Release();
+        }
+    }
+
+    private async Task<Uri> RequestDiscoveryDocumentAsync(
+        Uri metadataAddress,
+        bool requireHttps,
+        CancellationToken cancellationToken)
+    {
+        var client = httpClientFactory.CreateClient(HttpClientName);
+        using var response = await client.GetAsync(
+            metadataAddress,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"O servidor de autorização recusou o Discovery com status " +
+                $"{(int)response.StatusCode}.",
+                inner: null,
+                response.StatusCode);
+        }
+
+        var document = await response.Content.ReadFromJsonAsync<DiscoveryDocument>(
+            cancellationToken);
+        if (!Uri.TryCreate(
+                document?.TokenEndpoint,
+                UriKind.Absolute,
+                out var tokenEndpoint) ||
+            requireHttps && tokenEndpoint.Scheme != Uri.UriSchemeHttps)
+        {
+            throw new InvalidOperationException(
+                "O documento de Discovery retornou um token_endpoint inválido.");
+        }
+
+        return tokenEndpoint;
+    }
+
     private async Task<CachedToken> RequestTokenAsync(
+        ServiceTokenOptions options,
+        Uri tokenEndpoint,
         string audience,
         string scopes,
         CancellationToken cancellationToken)
     {
-        var options = optionsMonitor.CurrentValue;
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
-            options.TokenEndpoint)
+            tokenEndpoint)
         {
             Content = new FormUrlEncodedContent(
                 new Dictionary<string, string>
@@ -98,7 +187,8 @@ internal sealed class ServiceTokenProvider(
         if (!response.IsSuccessStatusCode)
         {
             throw new HttpRequestException(
-                $"O Identity recusou a emissão do token de serviço com status " +
+                $"O servidor de autorização recusou a emissão do token de " +
+                "serviço com status " +
                 $"{(int)response.StatusCode}.",
                 inner: null,
                 response.StatusCode);
@@ -107,15 +197,19 @@ internal sealed class ServiceTokenProvider(
         var payload = await response.Content.ReadFromJsonAsync<TokenResponse>(
             cancellationToken);
 
-        var accessToken = payload?.ResolveAccessToken();
-        var expiresIn = payload?.ResolveExpiresIn() ?? 0;
-        if (string.IsNullOrWhiteSpace(accessToken) || expiresIn <= 0)
+        if (string.IsNullOrWhiteSpace(payload?.AccessToken) ||
+            payload.ExpiresIn <= 0 ||
+            !string.Equals(
+                payload.TokenType,
+                "Bearer",
+                StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                "O Identity retornou uma resposta de token inválida.");
+                "O servidor de autorização retornou uma resposta de token " +
+                "inválida.");
         }
 
-        var usableLifetime = TimeSpan.FromSeconds(expiresIn) -
+        var usableLifetime = TimeSpan.FromSeconds(payload.ExpiresIn) -
             options.RefreshBeforeExpiration;
         if (usableLifetime <= TimeSpan.Zero)
         {
@@ -123,8 +217,23 @@ internal sealed class ServiceTokenProvider(
         }
 
         return new CachedToken(
-            accessToken,
+            payload.AccessToken,
             timeProvider.GetUtcNow().Add(usableLifetime));
+    }
+
+    private static Uri ResolveMetadataAddress(ServiceTokenOptions options)
+    {
+        if (options.MetadataAddress is not null)
+        {
+            return options.MetadataAddress;
+        }
+
+        var authority = options.Authority ??
+            throw new InvalidOperationException(
+                "Configure Authority, MetadataAddress ou TokenEndpoint.");
+        return new Uri(
+            $"{authority.AbsoluteUri.TrimEnd('/')}/.well-known/openid-configuration",
+            UriKind.Absolute);
     }
 
     private static string NormalizeScopes(string scopes) =>
@@ -141,24 +250,26 @@ internal sealed class ServiceTokenProvider(
         string AccessToken,
         DateTimeOffset ValidUntilUtc);
 
+    private sealed record CachedTokenEndpoint(
+        Uri MetadataAddress,
+        Uri TokenEndpoint,
+        DateTimeOffset ValidUntilUtc);
+
+    private sealed class DiscoveryDocument
+    {
+        [JsonPropertyName("token_endpoint")]
+        public string? TokenEndpoint { get; init; }
+    }
+
     private sealed class TokenResponse
     {
         [JsonPropertyName("access_token")]
-        public string? OAuthAccessToken { get; init; }
+        public string? AccessToken { get; init; }
 
         [JsonPropertyName("expires_in")]
-        public int? OAuthExpiresIn { get; init; }
+        public int ExpiresIn { get; init; }
 
-        [JsonPropertyName("accessToken")]
-        public string? DotNetAccessToken { get; init; }
-
-        [JsonPropertyName("expiresIn")]
-        public int? DotNetExpiresIn { get; init; }
-
-        public string? ResolveAccessToken() =>
-            OAuthAccessToken ?? DotNetAccessToken;
-
-        public int ResolveExpiresIn() =>
-            OAuthExpiresIn ?? DotNetExpiresIn ?? 0;
+        [JsonPropertyName("token_type")]
+        public string? TokenType { get; init; }
     }
 }

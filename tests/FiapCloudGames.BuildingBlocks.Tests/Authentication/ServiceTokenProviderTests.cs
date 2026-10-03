@@ -8,11 +8,10 @@ namespace FiapCloudGames.BuildingBlocks.Tests.Authentication;
 public sealed class ServiceTokenProviderTests
 {
     [Fact]
-    public async Task Provider_ShouldCacheTokenByAudienceAndNormalizedScopes()
+    public async Task GetAccessTokenAsync_WithEquivalentScopes_ReusesCachedToken()
     {
-        var handler = new TokenEndpointHandler();
-        var clock = new MutableTimeProvider(
-            new DateTimeOffset(2026, 9, 20, 12, 0, 0, TimeSpan.Zero));
+        var handler = new AuthorizationServerHandler();
+        var clock = CreateClock();
         var provider = CreateProvider(handler, clock);
 
         var first = await provider.GetAccessTokenAsync(
@@ -24,7 +23,10 @@ public sealed class ServiceTokenProviderTests
 
         Assert.Equal("technical-token-1", first);
         Assert.Equal(first, second);
-        Assert.Equal(1, handler.RequestCount);
+        Assert.Equal(1, handler.TokenRequestCount);
+        Assert.Equal(
+            "https://identity.internal/oauth2/token",
+            handler.LastTokenEndpoint?.AbsoluteUri);
         Assert.Contains("audience=payments-api", handler.LastForm);
         Assert.Contains(
             "scope=payments.process+payments.read",
@@ -32,11 +34,10 @@ public sealed class ServiceTokenProviderTests
     }
 
     [Fact]
-    public async Task Provider_ShouldRenewTokenBeforeExpiration()
+    public async Task GetAccessTokenAsync_WhenNearExpiration_RenewsToken()
     {
-        var handler = new TokenEndpointHandler();
-        var clock = new MutableTimeProvider(
-            new DateTimeOffset(2026, 9, 20, 12, 0, 0, TimeSpan.Zero));
+        var handler = new AuthorizationServerHandler();
+        var clock = CreateClock();
         var provider = CreateProvider(handler, clock);
 
         var first = await provider.GetAccessTokenAsync(
@@ -49,33 +50,86 @@ public sealed class ServiceTokenProviderTests
 
         Assert.Equal("technical-token-1", first);
         Assert.Equal("technical-token-2", second);
-        Assert.Equal(2, handler.RequestCount);
+        Assert.Equal(2, handler.TokenRequestCount);
     }
 
     [Fact]
-    public async Task Provider_ShouldAcceptCurrentIdentityCamelCaseContract()
+    public async Task GetAccessTokenAsync_WithAuthority_DiscoversAndCachesTokenEndpoint()
     {
-        var handler = new TokenEndpointHandler(useCamelCase: true);
-        var clock = new MutableTimeProvider(
-            new DateTimeOffset(2026, 9, 20, 12, 0, 0, TimeSpan.Zero));
-        var provider = CreateProvider(handler, clock);
+        var handler = new AuthorizationServerHandler();
+        var clock = CreateClock();
+        var provider = CreateProvider(handler, clock, useDiscovery: true);
 
-        var token = await provider.GetAccessTokenAsync(
+        await provider.GetAccessTokenAsync(
             "catalog-api",
-            "catalog.read");
+            "catalog.games.read");
+        await provider.GetAccessTokenAsync(
+            "payments-api",
+            "payments.process");
 
-        Assert.Equal("technical-token-1", token);
-        Assert.Equal(1, handler.RequestCount);
+        Assert.Equal(1, handler.DiscoveryRequestCount);
+        Assert.Equal(2, handler.TokenRequestCount);
+        Assert.Equal(
+            "https://identity.internal/.well-known/openid-configuration",
+            handler.LastDiscoveryEndpoint?.AbsoluteUri);
+        Assert.Equal(
+            "https://identity.internal/oauth2/token",
+            handler.LastTokenEndpoint?.AbsoluteUri);
     }
+
+    [Fact]
+    public async Task GetAccessTokenAsync_WithInvalidDiscoveryDocument_RejectsResponse()
+    {
+        var handler = new AuthorizationServerHandler(
+            discoveryTokenEndpoint: "not-an-absolute-uri");
+        var provider = CreateProvider(
+            handler,
+            CreateClock(),
+            useDiscovery: true);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            provider.GetAccessTokenAsync(
+                    "catalog-api",
+                    "catalog.games.read")
+                .AsTask());
+
+        Assert.Equal(
+            "O documento de Discovery retornou um token_endpoint inválido.",
+            exception.Message);
+        Assert.Equal(1, handler.DiscoveryRequestCount);
+        Assert.Equal(0, handler.TokenRequestCount);
+    }
+
+    [Fact]
+    public async Task GetAccessTokenAsync_WithNonOAuthResponse_RejectsResponse()
+    {
+        var handler = new AuthorizationServerHandler(useCamelCaseToken: true);
+        var provider = CreateProvider(handler, CreateClock());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            provider.GetAccessTokenAsync(
+                    "catalog-api",
+                    "catalog.games.read")
+                .AsTask());
+    }
+
+    private static MutableTimeProvider CreateClock() =>
+        new(new DateTimeOffset(2026, 9, 20, 12, 0, 0, TimeSpan.Zero));
 
     private static ServiceTokenProvider CreateProvider(
         HttpMessageHandler handler,
-        TimeProvider clock)
+        TimeProvider clock,
+        bool useDiscovery = false)
     {
         var options = new ServiceTokenOptions
         {
-            TokenEndpoint = new Uri("https://identity.internal/connect/token"),
-            ClientId = "orders-service",
+            Authority = useDiscovery
+                ? new Uri("https://identity.internal")
+                : null,
+            TokenEndpoint = useDiscovery
+                ? null
+                : new Uri("https://identity.internal/oauth2/token"),
+            ClientId = "orders-api",
             ClientSecret = "test-secret",
             RefreshBeforeExpiration = TimeSpan.FromSeconds(30)
         };
@@ -86,41 +140,65 @@ public sealed class ServiceTokenProviderTests
             clock);
     }
 
-    private sealed class TokenEndpointHandler(
-        bool useCamelCase = false) : HttpMessageHandler
+    private sealed class AuthorizationServerHandler(
+        string discoveryTokenEndpoint =
+            "https://identity.internal/oauth2/token",
+        bool useCamelCaseToken = false) : HttpMessageHandler
     {
-        public int RequestCount { get; private set; }
-
+        public int DiscoveryRequestCount { get; private set; }
+        public int TokenRequestCount { get; private set; }
         public string LastForm { get; private set; } = string.Empty;
+        public Uri? LastDiscoveryEndpoint { get; private set; }
+        public Uri? LastTokenEndpoint { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            RequestCount++;
+            if (request.Method == HttpMethod.Get)
+            {
+                DiscoveryRequestCount++;
+                LastDiscoveryEndpoint = request.RequestUri;
+                return JsonResponse(
+                    $$"""
+                    {
+                      "token_endpoint": "{{discoveryTokenEndpoint}}"
+                    }
+                    """);
+            }
+
+            TokenRequestCount++;
+            LastTokenEndpoint = request.RequestUri;
             LastForm = await request.Content!.ReadAsStringAsync(
                 cancellationToken);
 
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            return JsonResponse(
+                useCamelCaseToken
+                    ? $$"""
+                      {
+                        "accessToken": "technical-token-{{TokenRequestCount}}",
+                        "expiresIn": 120,
+                        "tokenType": "Bearer"
+                      }
+                      """
+                    : $$"""
+                      {
+                        "access_token": "technical-token-{{TokenRequestCount}}",
+                        "expires_in": 120,
+                        "token_type": "Bearer",
+                        "scope": "payments.process"
+                      }
+                      """);
+        }
+
+        private static HttpResponseMessage JsonResponse(string json) =>
+            new(HttpStatusCode.OK)
             {
                 Content = new StringContent(
-                    useCamelCase
-                        ? $$"""
-                          {
-                            "accessToken": "technical-token-{{RequestCount}}",
-                            "expiresIn": 120
-                          }
-                          """
-                        : $$"""
-                          {
-                            "access_token": "technical-token-{{RequestCount}}",
-                            "expires_in": 120
-                          }
-                          """,
+                    json,
                     Encoding.UTF8,
                     "application/json")
             };
-        }
     }
 
     private sealed class StubHttpClientFactory(

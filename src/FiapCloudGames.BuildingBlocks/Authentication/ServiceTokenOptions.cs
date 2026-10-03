@@ -8,7 +8,20 @@ public sealed class ServiceTokenOptions
     /// <summary>Nome padrão da seção de configuração.</summary>
     public const string DefaultSectionName = "ServiceAuthentication";
 
-    /// <summary>Obtém ou define o endpoint de emissão de tokens.</summary>
+    /// <summary>
+    /// Obtém ou define a autoridade usada para descobrir o endpoint de token.
+    /// </summary>
+    public Uri? Authority { get; set; }
+
+    /// <summary>
+    /// Obtém ou define um documento de Discovery em endereço não convencional.
+    /// </summary>
+    public Uri? MetadataAddress { get; set; }
+
+    /// <summary>
+    /// Obtém ou define diretamente o endpoint de emissão de tokens.
+    /// Quando informado, tem precedência sobre Discovery.
+    /// </summary>
     public Uri? TokenEndpoint { get; set; }
 
     /// <summary>Obtém ou define o identificador desta aplicação.</summary>
@@ -23,4 +36,10 @@ public sealed class ServiceTokenOptions
     /// <summary>Obtém ou define a antecedência usada para renovar o token.</summary>
     public TimeSpan RefreshBeforeExpiration { get; set; } =
         TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Obtém ou define por quanto tempo o endpoint descoberto fica em cache.
+    /// </summary>
+    public TimeSpan DiscoveryRefreshInterval { get; set; } =
+        TimeSpan.FromHours(1);
 }

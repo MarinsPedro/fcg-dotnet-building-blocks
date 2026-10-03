@@ -24,13 +24,13 @@ public static class ServiceTokenRegistrationExtensions
         services.AddOptions<ServiceTokenOptions>()
             .Bind(configuration.GetSection(sectionName))
             .Validate(
-                options => options.TokenEndpoint is { IsAbsoluteUri: true },
-                $"Configure '{sectionName}:TokenEndpoint' com uma URI absoluta.")
+                options => HasValidTokenSource(options),
+                $"Configure '{sectionName}:Authority', " +
+                $"'{sectionName}:MetadataAddress' ou " +
+                $"'{sectionName}:TokenEndpoint' com uma URI absoluta.")
             .Validate(
-                options =>
-                    !options.RequireHttps ||
-                    options.TokenEndpoint?.Scheme == Uri.UriSchemeHttps,
-                $"'{sectionName}:TokenEndpoint' deve usar HTTPS.")
+                options => HasSecureTokenSource(options),
+                $"A fonte de tokens de '{sectionName}' deve usar HTTPS.")
             .Validate(
                 options => !string.IsNullOrWhiteSpace(options.ClientId),
                 $"Configure '{sectionName}:ClientId'.")
@@ -40,6 +40,11 @@ public static class ServiceTokenRegistrationExtensions
             .Validate(
                 options => options.RefreshBeforeExpiration >= TimeSpan.Zero,
                 $"'{sectionName}:RefreshBeforeExpiration' não pode ser negativo.")
+            .Validate(
+                options => options.DiscoveryRefreshInterval > TimeSpan.Zero &&
+                    options.DiscoveryRefreshInterval <= TimeSpan.FromDays(1),
+                $"'{sectionName}:DiscoveryRefreshInterval' deve ser maior que " +
+                "zero e menor ou igual a um dia.")
             .ValidateOnStart();
 
         services.AddHttpClient(ServiceTokenProvider.HttpClientName);
@@ -48,4 +53,22 @@ public static class ServiceTokenRegistrationExtensions
 
         return services;
     }
+
+    private static bool HasValidTokenSource(ServiceTokenOptions options) =>
+        options.TokenEndpoint is { IsAbsoluteUri: true } ||
+        options.MetadataAddress is { IsAbsoluteUri: true } ||
+        options.Authority is { IsAbsoluteUri: true };
+
+    private static bool HasSecureTokenSource(ServiceTokenOptions options)
+    {
+        if (!options.RequireHttps)
+        {
+            return true;
+        }
+
+        return GetConfiguredTokenSource(options)?.Scheme == Uri.UriSchemeHttps;
+    }
+
+    private static Uri? GetConfiguredTokenSource(ServiceTokenOptions options) =>
+        options.TokenEndpoint ?? options.MetadataAddress ?? options.Authority;
 }

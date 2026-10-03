@@ -13,7 +13,7 @@ de negócio.
 - `ICallerContext` com tipo do token, `client_id`, scopes e usuário da borda;
 - autenticação obrigatória por padrão, com `AllowAnonymous` explícito;
 - policies por tipo de token, cliente e scopes;
-- cliente Client Credentials com cache de token;
+- cliente Client Credentials com Discovery e cache de token;
 - tratamento global de exceções com `IExceptionHandler`;
 - respostas `application/problem+json` padronizadas;
 - validação MVC padronizada;
@@ -78,7 +78,7 @@ app.UseFiapApiDefaults();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapFiapHealthChecks().AllowAnonymous();
+app.MapFiapHealthEndpoints();
 app.MapControllers();
 
 await app.RunAsync();
@@ -102,14 +102,20 @@ padronizar também as respostas `401` e `403` sem corpo.
     "ClockSkew": "00:00:30"
   },
   "ServiceAuthentication": {
-    "TokenEndpoint": "https://identity.internal/connect/token",
+    "Authority": "https://identity.internal",
     "ClientId": "orders-api",
     "ClientSecret": "fornecido-por-secret-ou-user-secrets",
     "RequireHttps": true,
-    "RefreshBeforeExpiration": "00:00:30"
+    "RefreshBeforeExpiration": "00:00:30",
+    "DiscoveryRefreshInterval": "01:00:00"
   }
 }
 ```
+
+O provider consulta `/.well-known/openid-configuration`, lê o
+`token_endpoint` e mantém esse endereço em cache. Quando Discovery não estiver
+disponível, `ServiceAuthentication:TokenEndpoint` pode ser configurado
+explicitamente e tem precedência sobre `Authority`.
 
 APIs internas aceitam apenas `service` por padrão. Um BFF ou API Gateway que
 valida tokens externos deve configurar `"AllowedTokenUses": ["user"]`.
@@ -149,7 +155,32 @@ var token = await tokenProvider.GetAccessTokenAsync(
 ```
 
 O provider normaliza os scopes e reutiliza o token até próximo da expiração.
-Ele nunca registra o token ou o client secret.
+Ele aceita somente a resposta OAuth padronizada com `access_token`,
+`token_type=Bearer` e `expires_in`. O token e o client secret nunca são
+registrados.
+
+## Health checks
+
+`MapFiapHealthEndpoints` publica três endpoints anônimos e sem cache:
+
+```text
+GET /health        todos os checks registrados
+GET /health/live   somente o estado do processo, sem dependências externas
+GET /health/ready  checks marcados com a tag ready
+```
+
+Uma dependência necessária para receber tráfego deve ser registrada com a tag
+`ready`:
+
+```csharp
+builder.Services.AddHealthChecks()
+    .AddCheck<DatabaseHealthCheck>(
+        "database",
+        tags: ["ready"]);
+```
+
+`MapFiapHealthChecks` continua disponível para aplicações que precisam mapear
+um único caminho customizado.
 
 ## Usuário nas chamadas internas
 
