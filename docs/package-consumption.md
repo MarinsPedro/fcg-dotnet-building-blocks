@@ -18,7 +18,7 @@ Registre a fonte no perfil do desenvolvedor:
 ```powershell
 dotnet nuget add source `
   https://nuget.pkg.github.com/MarinsPedro/index.json `
-  --name FiapCloudGames `
+  --name github `
   --username MarinsPedro `
   --password SEU_TOKEN `
   --store-password-in-clear-text
@@ -36,7 +36,7 @@ No `Directory.Packages.props`:
 <ItemGroup>
   <PackageVersion
       Include="FiapCloudGames.BuildingBlocks"
-      Version="0.2.0" />
+      Version="0.3.0" />
 </ItemGroup>
 ```
 
@@ -49,6 +49,27 @@ No `.csproj`:
 ```
 
 Não use versões flutuantes como `0.*`.
+
+## Alternar entre projeto local e pacote publicado
+
+O serviço consumidor pode manter a flag no próprio `Directory.Build.props`.
+Ela deve assumir `false` quando não for informada, para que CI e produção usem
+o pacote publicado. Com a flag `true`, os `.csproj` usam um
+`ProjectReference` para o checkout local.
+
+```powershell
+# Desenvolvimento: compila diretamente o código local, sem publicar NuGet.
+dotnet build -p:UseLocalBuildingBlocks=true
+
+# Comportamento padrão: restaura a versão definida em Directory.Packages.props.
+dotnet build
+```
+
+A saída do build local deve exibir a mensagem `Usando
+FiapCloudGames.BuildingBlocks local` e o caminho resolvido. Além disso, a lista
+de dependências do projeto mostra uma referência de projeto, e não o pacote.
+Alterar apenas o `appsettings.json` não funciona para esse propósito: a escolha
+entre NuGet e projeto local ocorre durante o MSBuild, antes da aplicação iniciar.
 
 ## GitHub Actions dos serviços consumidores
 

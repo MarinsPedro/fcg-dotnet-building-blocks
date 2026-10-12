@@ -25,7 +25,7 @@ public static class FiapApiDefaultsExtensions
 
         services.AddProblemDetails();
         services.AddExceptionHandler<FiapExceptionHandler>();
-        services.Configure<ApiBehaviorOptions>(
+        services.PostConfigure<ApiBehaviorOptions>(
             ApiBehaviorOptionsConfigurator.Configure);
         services.Configure<JsonOptions>(options =>
         {
@@ -52,6 +52,7 @@ public static class FiapApiDefaultsExtensions
         ArgumentNullException.ThrowIfNull(app);
 
         app.UseFiapCorrelationId();
+        app.UseMiddleware<ClientErrorLoggingMiddleware>();
         app.UseExceptionHandler();
         app.UseStatusCodePages(async statusCodeContext =>
         {
@@ -66,7 +67,6 @@ public static class FiapApiDefaultsExtensions
                 contentType: ProblemJsonContentType,
                 cancellationToken: context.RequestAborted);
         });
-        app.UseMiddleware<ClientErrorLoggingMiddleware>();
 
         return app;
     }

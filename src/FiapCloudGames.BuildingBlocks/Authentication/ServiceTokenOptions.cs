@@ -42,4 +42,28 @@ public sealed class ServiceTokenOptions
     /// </summary>
     public TimeSpan DiscoveryRefreshInterval { get; set; } =
         TimeSpan.FromHours(1);
+
+    /// <summary>Obtém ou define o timeout de Discovery e emissão de token.</summary>
+    public TimeSpan HttpTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>Obtém ou define a quantidade máxima de novas tentativas.</summary>
+    public int RetryCount { get; set; } = 2;
+
+    /// <summary>Obtém ou define o atraso base do retry exponencial.</summary>
+    public TimeSpan RetryBaseDelay { get; set; } =
+        TimeSpan.FromMilliseconds(200);
+
+    /// <summary>Obtém ou define a quantidade máxima de tokens em cache.</summary>
+    public int MaxCachedTokens { get; set; } = 128;
+
+    /// <summary>
+    /// Indica se um endpoint descoberto deve usar o mesmo host dos metadados,
+    /// salvo quando estiver explicitamente permitido.
+    /// </summary>
+    public bool RequireSameHostForDiscoveredTokenEndpoint { get; set; } = true;
+
+    /// <summary>
+    /// Obtém ou define hosts adicionais permitidos para endpoints descobertos.
+    /// </summary>
+    public string[] AllowedTokenEndpointHosts { get; set; } = [];
 }

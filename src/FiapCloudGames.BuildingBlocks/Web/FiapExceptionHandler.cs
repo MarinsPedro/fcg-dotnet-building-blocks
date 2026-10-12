@@ -13,16 +13,6 @@ internal sealed class FiapExceptionHandler(
         Exception exception,
         CancellationToken cancellationToken)
     {
-        if (exception is OperationCanceledException &&
-            httpContext.RequestAborted.IsCancellationRequested)
-        {
-            logger.LogDebug(
-                "Requisição cancelada pelo cliente durante {Method} {Path}.",
-                httpContext.Request.Method,
-                httpContext.Request.Path);
-            return true;
-        }
-
         if (httpContext.Response.HasStarted)
         {
             return false;

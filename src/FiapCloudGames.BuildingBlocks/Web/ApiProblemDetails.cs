@@ -22,6 +22,10 @@ public sealed class ApiProblemDetails
     /// <summary>Obtém o identificador usado para localizar a requisição.</summary>
     public required string TraceId { get; init; }
 
+    /// <summary>Obtém o identificador de correlação da aplicação.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CorrelationId { get; init; }
+
     /// <summary>Obtém erros adicionais, quando existentes.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyCollection<ApiError>? Errors { get; init; }

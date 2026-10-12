@@ -32,7 +32,7 @@ Consulte [Consumo do pacote privado](docs/package-consumption.md) para configura
 o GitHub Packages sem gravar tokens no repositório.
 
 ```xml
-<PackageReference Include="FiapCloudGames.BuildingBlocks" Version="0.2.0" />
+<PackageReference Include="FiapCloudGames.BuildingBlocks" Version="0.3.0" />
 ```
 
 ## Arquitetura do pacote
@@ -107,7 +107,13 @@ padronizar também as respostas `401` e `403` sem corpo.
     "ClientSecret": "fornecido-por-secret-ou-user-secrets",
     "RequireHttps": true,
     "RefreshBeforeExpiration": "00:00:30",
-    "DiscoveryRefreshInterval": "01:00:00"
+    "DiscoveryRefreshInterval": "01:00:00",
+    "HttpTimeout": "00:00:10",
+    "RetryCount": 2,
+    "RetryBaseDelay": "00:00:00.200",
+    "MaxCachedTokens": 128,
+    "RequireSameHostForDiscoveredTokenEndpoint": true,
+    "AllowedTokenEndpointHosts": []
   }
 }
 ```
@@ -116,6 +122,16 @@ O provider consulta `/.well-known/openid-configuration`, lê o
 `token_endpoint` e mantém esse endereço em cache. Quando Discovery não estiver
 disponível, `ServiceAuthentication:TokenEndpoint` pode ser configurado
 explicitamente e tem precedência sobre `Authority`.
+
+Por padrão, o `token_endpoint` descoberto precisa usar HTTPS e pertencer ao
+mesmo host da Authority. Hosts diferentes devem ser autorizados explicitamente
+em `AllowedTokenEndpointHosts`. Redirecionamentos HTTP são desabilitados para
+impedir que `client_id` e `client_secret` sejam reenviados a outro destino.
+
+Timeouts, falhas de transporte e respostas `408`, `429` ou `5xx` recebem retry
+limitado. Erros OAuth e demais respostas `4xx` não são repetidos. Mudanças na
+seção `ServiceAuthentication` invalidam tokens e Discovery em cache; uma
+requisição iniciada com a configuração antiga não pode preencher o cache novo.
 
 APIs internas aceitam apenas `service` por padrão. Um BFF ou API Gateway que
 valida tokens externos deve configurar `"AllowedTokenUses": ["user"]`.
@@ -158,6 +174,51 @@ O provider normaliza os scopes e reutiliza o token até próximo da expiração.
 Ele aceita somente a resposta OAuth padronizada com `access_token`,
 `token_type=Bearer` e `expires_in`. O token e o client secret nunca são
 registrados.
+
+Tokens cuja vida útil restante já esteja dentro da janela de renovação são
+entregues ao caller atual, mas não entram no cache. O número de chaves em cache
+é limitado por `MaxCachedTokens`.
+
+## Correlação entre serviços
+
+O correlation ID de entrada é propagado para a resposta pelo pipeline. Para
+chamadas de saída, a propagação é opt-in e deve ser aplicada somente aos
+`HttpClient` destinados a serviços internos:
+
+```csharp
+services.AddHttpClient<IInternalGateway, InternalGateway>(client =>
+    client.BaseAddress = new Uri("https://internal-service/"))
+    .AddFiapCorrelationPropagation();
+```
+
+Não aplique o handler globalmente: APIs externas não fazem parte da cadeia de
+observabilidade interna e não devem receber identificadores da infraestrutura.
+Se a requisição já possuir `X-Correlation-ID`, o handler preserva esse valor.
+
+`traceId` e `correlationId` aparecem separadamente no Problem Details. O
+primeiro identifica o trace gerado pelo runtime; o segundo representa o valor
+de negócio/integração recebido ou criado pelo middleware.
+
+## Fluxos de autenticação
+
+Fluxo de entrada:
+
+```text
+request -> correlation ID -> tratamento/log de erros -> autenticação JWT
+        -> autorização por token_use/client/scope -> controller
+```
+
+Fluxo de saída:
+
+```text
+aplicação -> cache de token -> Discovery seguro (quando necessário)
+          -> Client Credentials com timeout/retry limitado
+          -> HttpClient interno com propagação explícita de correlation ID
+```
+
+O access token recebido pela API nunca é reutilizado automaticamente numa
+chamada interna. O serviço obtém seu próprio token técnico para a audience e os
+scopes do destino.
 
 ## Health checks
 

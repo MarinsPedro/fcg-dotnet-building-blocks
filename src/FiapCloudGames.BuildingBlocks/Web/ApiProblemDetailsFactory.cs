@@ -50,6 +50,7 @@ internal static class ApiProblemDetailsFactory
             Status = descriptor.Status,
             Detail = resolvedDetail,
             TraceId = GetTraceId(context),
+            CorrelationId = GetCorrelationId(context),
             Errors = errors?.ToArray()
         };
 
@@ -74,6 +75,10 @@ internal static class ApiProblemDetailsFactory
     }
 
     private static string GetTraceId(HttpContext context)
+        => Activity.Current?.TraceId.ToString() ??
+            context.TraceIdentifier;
+
+    private static string? GetCorrelationId(HttpContext context)
     {
         if (context.Items.TryGetValue(
                 CorrelationIdConstants.ItemName,
@@ -83,7 +88,6 @@ internal static class ApiProblemDetailsFactory
             return value;
         }
 
-        return Activity.Current?.TraceId.ToString() ??
-            context.TraceIdentifier;
+        return null;
     }
 }

@@ -47,4 +47,21 @@ public sealed class CorrelationIdMiddlewareTests
         Assert.NotEqual("invalid\r\nheader", generated);
         Assert.NotEmpty(generated);
     }
+
+    [Fact]
+    public async Task Middleware_ShouldReplaceOversizedCorrelationId()
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Headers[CorrelationIdConstants.HeaderName] =
+            new string('a', 129);
+        var middleware = new CorrelationIdMiddleware(
+            _ => Task.CompletedTask,
+            NullLogger<CorrelationIdMiddleware>.Instance);
+
+        await middleware.InvokeAsync(context);
+
+        var generated = Assert.IsType<string>(
+            context.Items[CorrelationIdConstants.ItemName]);
+        Assert.NotEqual(new string('a', 129), generated);
+    }
 }
