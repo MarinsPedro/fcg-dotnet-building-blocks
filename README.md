@@ -124,8 +124,9 @@ disponível, `ServiceAuthentication:TokenEndpoint` pode ser configurado
 explicitamente e tem precedência sobre `Authority`.
 
 Por padrão, o `token_endpoint` descoberto precisa usar HTTPS e pertencer ao
-mesmo host da Authority. Hosts diferentes devem ser autorizados explicitamente
-em `AllowedTokenEndpointHosts`. Redirecionamentos HTTP são desabilitados para
+mesmo host do documento de metadados, obtido por `MetadataAddress` ou derivado
+da `Authority`. Hosts diferentes devem ser autorizados explicitamente em
+`AllowedTokenEndpointHosts`. Redirecionamentos HTTP são desabilitados para
 impedir que `client_id` e `client_secret` sejam reenviados a outro destino.
 
 Timeouts, falhas de transporte e respostas `408`, `429` ou `5xx` recebem retry
@@ -151,7 +152,7 @@ builder.Services.AddAuthorization(options =>
             .RequireAuthenticatedUser()
             .RequireServiceToken()
             .RequireClients("orders-api")
-            .RequireScopes("payments.process"));
+            .RequireScopes("payments.confirm"));
 });
 ```
 
@@ -166,7 +167,7 @@ public IActionResult ProcessPayment() => Ok();
 ```csharp
 var token = await tokenProvider.GetAccessTokenAsync(
     audience: "payments-api",
-    scopes: "payments.process",
+    scopes: "payments.confirm",
     cancellationToken);
 ```
 

@@ -52,17 +52,17 @@ Não use versões flutuantes como `0.*`.
 
 ## Alternar entre projeto local e pacote publicado
 
-O serviço consumidor pode manter a flag no próprio `Directory.Build.props`.
-Ela deve assumir `false` quando não for informada, para que CI e produção usem
-o pacote publicado. Com a flag `true`, os `.csproj` usam um
-`ProjectReference` para o checkout local.
+Os serviços do workspace mantêm a flag no próprio `Directory.Build.props`. No
+ambiente acadêmico atual, ela assume `true` quando não é informada para compilar
+diretamente o checkout irmão do Building Blocks. Com `false`, os `.csproj` usam
+o pacote publicado definido em `Directory.Packages.props`.
 
 ```powershell
-# Desenvolvimento: compila diretamente o código local, sem publicar NuGet.
-dotnet build -p:UseLocalBuildingBlocks=true
-
-# Comportamento padrão: restaura a versão definida em Directory.Packages.props.
+# Desenvolvimento no workspace: usa o projeto local por padrão.
 dotnet build
+
+# Pacote publicado: desabilita explicitamente a referência local.
+dotnet build -p:UseLocalBuildingBlocks=false
 ```
 
 A saída do build local deve exibir a mensagem `Usando
@@ -74,12 +74,17 @@ entre NuGet e projeto local ocorre durante o MSBuild, antes da aplicação inici
 ## GitHub Actions dos serviços consumidores
 
 O workflow consumidor precisa de `packages: read`. O `setup-dotnet` pode
-configurar a fonte autenticada com o `GITHUB_TOKEN`:
+configurar a fonte autenticada com o `GITHUB_TOKEN`. Como o checkout irmão não
+existe no runner isolado, o workflow também deve definir
+`UseLocalBuildingBlocks=false`:
 
 ```yaml
 permissions:
   contents: read
   packages: read
+
+env:
+  UseLocalBuildingBlocks: false
 
 steps:
   - uses: actions/checkout@v7
